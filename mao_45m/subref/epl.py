@@ -102,7 +102,7 @@ def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
 def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
     global udp_ready_event
 
-    d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")
+    d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")  # type: ignore
     udp_ready_event.clear()
     udp_ready_event.wait()
     udp_ready_event.clear()
@@ -114,7 +114,7 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
         if i == 0:
             start_time = data_time
 
-        n = get_n_from_current_time(d0, data_time, delay)
+        n = get_n_from_current_time(d0, data_time, delay)  # type: ignore
         target = make_pattern[n % pattern_len]
         if target == "x":
             continue
@@ -303,7 +303,7 @@ def read_head(frame: bytes) -> head_data:
     )
     time_dt = time.astype("datetime64[us]").astype(datetime)
 
-    return head_data(time_dt, thread_id, ch, integ)
+    return head_data(time_dt, thread_id, ch, integ)  # type: ignore
 
 
 def get_latest_packets(a: int) -> list:
@@ -339,7 +339,7 @@ def get_spectrum(
 
     for i in range(n_units):
         frame = scan[i]
-        time = read_head(frame).time
+        time = read_head(frame).time  # type: ignore
         # integ = read_head(frame).integ
         corr_data = read_corr_data(frame[288:1312])
         spectra[i] = parse_corr_data(corr_data)

@@ -11,18 +11,9 @@ __all__ = [
 
 # standard library
 import re
-import time
 from datetime import datetime, timedelta
 from struct import Struct
-from typing import (
-    Callable,
-    Optional,
-    Pattern,
-    NamedTuple,
-    get_args,
-    Union,
-    Literal as L,
-)
+from typing import Callable, Optional, Pattern, NamedTuple
 from scipy.optimize import curve_fit
 import threading
 from collections import deque
@@ -58,7 +49,6 @@ from socket import (
     IP_ADD_MEMBERSHIP,
     IPPROTO_IP,
     SO_REUSEADDR,
-    SOCK_DGRAM,
     SOL_SOCKET,
     inet_aton,
     socket,
@@ -94,7 +84,6 @@ def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
     receiver_thread = threading.Thread(
         target=udp_receiver, args=(sock, udp_ready_event), daemon=True
     )
-    # receiver_thread = threading.Process(target=udp_receiver, args=(sock, udp_ready_event), daemon=True)
     receiver_thread.start()
     print("Starting receiver thread...")
 
@@ -150,7 +139,6 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
 
 def calc_epl(spec: xr.Dataset) -> xr.Dataset:
     freq = spec.coords["freq"].values
-    # time = spec.coords["time"].values
 
     epl_dict = {}
     for f in ["c", "t", "r", "b", "l"]:
@@ -163,10 +151,7 @@ def calc_epl(spec: xr.Dataset) -> xr.Dataset:
             "r": (("time",), np.array([epl_dict["r"]])),
             "b": (("time",), np.array([epl_dict["b"]])),
             "l": (("time",), np.array([epl_dict["l"]])),
-        },
-        coords={
-            # "time": np.array(time).astype("datetime64[ns]"),
-        },
+        }
     )
 
     return ds
@@ -229,7 +214,6 @@ def udp_receiver(sock, udp_ready_event):
             if ch == 64:
                 break
 
-        start = time.perf_counter()
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
@@ -330,7 +314,6 @@ def get_spectrum(
     scan: xr.Dataset,
     chbin: int = 8,
 ) -> tuple[datetime, np.ndarray]:
-    # n_integ = int(integ / TIME_PER_SCAN)
     n_integ = 1
     n_units = N_UNITS_PER_SCAN * n_integ
     n_chans = N_ROWS_CORR_DATA // 2
@@ -340,11 +323,9 @@ def get_spectrum(
     for i in range(n_units):
         frame = scan[i]
         time = read_head(frame).time  # type: ignore
-        # integ = read_head(frame).integ
         corr_data = read_corr_data(frame[288:1312])
         spectra[i] = parse_corr_data(corr_data)
 
-    # integ = integ * 1e-3 # ms -> s
     spectra = spectra.reshape([n_integ, N_UNITS_PER_SCAN * n_chans])
     spectrum = integrate_spectra(spectra, chbin)
     return time, spectrum

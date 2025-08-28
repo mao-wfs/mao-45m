@@ -1,0 +1,29 @@
+{
+    "name": "mao-45m",
+    "image": "ghcr.io/astral-sh/uv:python3.12-bookworm",
+    "runArgs": [
+        "--name=mao-45m"
+    ],
+    "containerEnv": {
+        "UV_PROJECT_ENVIRONMENT": "/usr/local"
+    },
+    "postCreateCommand": "uv sync --frozen",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.black-formatter",
+                "ms-python.python",
+                "streetsidesoftware.code-spell-checker",
+                "tamasfe.even-better-toml"
+            ],
+            "settings": {
+                "notebook.formatOnSave.enabled": true,
+                "python.languageServer": "Pylance",
+                "[python]": {
+                    "editor.defaultFormatter": "ms-python.black-formatter",
+                    "editor.formatOnSave": true
+                }
+            }
+        }
+    }
+}

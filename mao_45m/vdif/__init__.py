@@ -4,6 +4,7 @@ __all__ = [
     "CORR_HEAD_BYTES",
     "CORR_DATA_BYTES",
     "reader",
+    "receiver",
     "sender",
 ]
 
@@ -18,4 +19,5 @@ FRAMES_PER_SAMPLE = 64
 
 # dependencies
 from . import reader
+from . import receiver
 from . import sender

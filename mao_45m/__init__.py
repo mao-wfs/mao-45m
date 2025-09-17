@@ -11,6 +11,9 @@ def main():
     Fire(
         {
             "subref": {"run": subref.run},
-            "vdif": {"send": vdif.sender.send},
+            "vdif": {
+                "receive": vdif.receiver.receive,
+                "send": vdif.sender.send,
+            },
         }
     )

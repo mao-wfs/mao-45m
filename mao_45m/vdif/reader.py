@@ -6,6 +6,7 @@ __all__ = [
     "get_ip_length",
     "get_reference_epoch",
     "get_sample_number",
+    "get_spectrum",
     "get_time",
     "get_thread_id",
     "get_word",
@@ -18,8 +19,9 @@ from dataclasses import dataclass
 
 # dependencies
 import numpy as np
+from numpy.typing import NDArray
 from typing_extensions import Self
-from . import FRAMES_PER_SAMPLE, VDIF_HEAD_BYTES
+from . import CORR_DATA_BYTES, FRAMES_PER_SAMPLE, VDIF_HEAD_BYTES
 
 
 @dataclass(frozen=True)
@@ -69,8 +71,14 @@ def get_sample_number(frame: bytes, /) -> int:
     return get_frame_number(frame) // FRAMES_PER_SAMPLE
 
 
+def get_spectrum(frame: bytes, /) -> NDArray[np.complex128]:
+    """Get the complex auto or cross-correlation spectrum."""
+    data = np.frombuffer(frame[-CORR_DATA_BYTES:], dtype=np.int16)
+    return data[0::2] + data[1::2] * 1j
+
+
 def get_time(frame: bytes, /) -> np.datetime64:
-    """Get the time of the frame as np.datetime64."""
+    """Get the recorded time of the frame in UTC."""
     return (
         np.datetime64("2000")
         + np.timedelta64(6 * get_reference_epoch(frame), "M")

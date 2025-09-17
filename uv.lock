@@ -206,6 +206,7 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tqdm" },
+    { name = "typing-extensions" },
     { name = "xarray", version = "2025.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "xarray", version = "2025.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -227,6 +228,7 @@ requires-dist = [
     { name = "pandas-stubs", specifier = ">=2,<3" },
     { name = "scipy", specifier = ">=1,<2" },
     { name = "tqdm", specifier = ">=4,<5" },
+    { name = "typing-extensions", specifier = ">=4,<5" },
     { name = "xarray", specifier = ">=2024,<2026" },
 ]
 

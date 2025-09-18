@@ -1,12 +1,13 @@
 __all__ = [
     "Word",
     "get_channel_number",
+    "get_corr_data",
     "get_elapsed_seconds",
     "get_frame_number",
     "get_ip_length",
     "get_reference_epoch",
+    "get_samples",
     "get_sample_number",
-    "get_spectrum",
     "get_time",
     "get_thread_id",
     "get_word",
@@ -19,9 +20,10 @@ from dataclasses import dataclass
 
 # dependencies
 import numpy as np
+import xarray as xr
 from numpy.typing import NDArray
 from typing_extensions import Self
-from . import CORR_DATA_BYTES, FRAMES_PER_SAMPLE, VDIF_HEAD_BYTES
+from . import CHANS_PER_FRAME, CORR_DATA_BYTES, FRAMES_PER_SAMPLE, VDIF_HEAD_BYTES
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,12 @@ def get_channel_number(frame: bytes, /) -> int:
     return get_word(frame[:VDIF_HEAD_BYTES], 4)[16:24]
 
 
+def get_corr_data(frame: bytes, /) -> NDArray[np.complex128]:
+    """Get the complex auto or cross-correlation data."""
+    data = np.frombuffer(frame[-CORR_DATA_BYTES:], dtype=np.int16)
+    return data[0::2] + data[1::2] * 1j
+
+
 def get_elapsed_seconds(frame: bytes, /) -> int:
     """Get the elapsed seconds from the reference epoch."""
     return get_word(frame[:VDIF_HEAD_BYTES], 0)[0:30]
@@ -66,15 +74,46 @@ def get_reference_epoch(frame: bytes, /) -> int:
     return get_word(frame[:VDIF_HEAD_BYTES], 1)[24:30]
 
 
+def get_samples(frames: list[bytes], /) -> xr.DataArray:
+    """Get VDIF samples from VDIF frames (time x chan)."""
+    data = []
+    ids = []
+    times = []
+
+    for frame in frames:
+        data.append(get_corr_data(frame))
+        ids.append(get_channel_number(frame))
+        times.append(get_time(frame))
+
+    da = (
+        xr.DataArray(
+            data,
+            dims=("time", "chan"),
+            coords={
+                "chan": np.arange(CHANS_PER_FRAME),
+                "id": ("time", ids),
+                "time": times,
+            },
+        )
+        .set_index(temp=("id", "time"))
+        .unstack("temp")
+        .stack(temp=("chan", "id"))
+        .reset_index("temp")
+    )
+
+    return (
+        da.assign_coords(temp=CHANS_PER_FRAME * (da.id - 1) + da.chan)
+        .drop_vars(("chan", "id"))
+        .rename(temp="chan")
+        .sortby("time")
+        .sortby("chan")
+        .dropna("time")
+    )
+
+
 def get_sample_number(frame: bytes, /) -> int:
     """Get the sample number within a second (0, 1, ...)."""
     return get_frame_number(frame) // FRAMES_PER_SAMPLE
-
-
-def get_spectrum(frame: bytes, /) -> NDArray[np.complex128]:
-    """Get the complex auto or cross-correlation spectrum."""
-    data = np.frombuffer(frame[-CORR_DATA_BYTES:], dtype=np.int16)
-    return data[0::2] + data[1::2] * 1j
 
 
 def get_time(frame: bytes, /) -> np.datetime64:
@@ -84,6 +123,7 @@ def get_time(frame: bytes, /) -> np.datetime64:
         + np.timedelta64(6 * get_reference_epoch(frame), "M")
         + np.timedelta64(get_elapsed_seconds(frame), "s")
         + np.timedelta64(get_sample_number(frame) * get_ip_length(frame), "ms")
+        + np.timedelta64(0, "ns")
     )
 
 

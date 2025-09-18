@@ -11,7 +11,7 @@ from time import perf_counter
 
 # dependencies
 from tqdm import trange
-from . import FRAMES_PER_SAMPLE, VDIF_FRAME_BYTES
+from . import FRAMES_PER_SAMPLE, FRAME_BYTES
 from .reader import get_ip_length
 
 
@@ -40,7 +40,7 @@ def send(
         ttl: Time-to-live for multicast packets.
 
     """
-    n_frames, remainder = divmod(Path(vdif).stat().st_size, VDIF_FRAME_BYTES)
+    n_frames, remainder = divmod(Path(vdif).stat().st_size, FRAME_BYTES)
 
     if remainder:
         LOGGER.warning(f"VDIF file is truncated ({remainder} bytes remaining).")
@@ -59,7 +59,7 @@ def send(
                     unit_scale=True,
                 ):
                     start = perf_counter()
-                    sock.sendto(frame := file.read(VDIF_FRAME_BYTES), (group, port))
+                    sock.sendto(frame := file.read(FRAME_BYTES), (group, port))
                     seconds_per_frame = get_ip_length(frame) / 1000 / FRAMES_PER_SAMPLE
                     end = perf_counter()
                     sleep(seconds_per_frame - (end - start))

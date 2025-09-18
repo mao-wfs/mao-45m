@@ -24,7 +24,7 @@ from threading import Event, Lock, Thread
 
 # dependencies
 from tqdm import tqdm
-from . import VDIF_FRAME_BYTES
+from . import FRAME_BYTES
 
 
 # constants
@@ -160,7 +160,7 @@ def get_frames(
                 unit="%",
             ) as bar:
                 while not event.is_set():
-                    frame, _ = sock.recvfrom(VDIF_FRAME_BYTES)
+                    frame, _ = sock.recvfrom(FRAME_BYTES)
                     frames.append(frame)
                     bar.n = len(frames)
                     bar.refresh()

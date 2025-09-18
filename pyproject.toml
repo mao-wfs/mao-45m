@@ -3,8 +3,9 @@ name = "mao-45m"
 version = "0.1.0"
 description = "MAO controller for the Nobeyama 45m telescope"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 dependencies = [
+    "decode>=2025.6,<2026.0",
     "fire>=0.7,<1.0",
     "numpy>=2,<3",
     "pandas>=2,<3",
@@ -20,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 [[project.authors]]

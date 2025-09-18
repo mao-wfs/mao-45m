@@ -12,7 +12,7 @@ def main():
         {
             "subref": {"run": subref.run},
             "vdif": {
-                "receive": vdif.receiver.receive,
+                "receive": vdif.receive.receive,
                 "send": vdif.sender.send,
             },
         }

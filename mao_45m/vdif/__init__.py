@@ -6,7 +6,7 @@ __all__ = [
     "CHANS_PER_FRAME",
     "FRAMES_PER_SAMPLE",
     "convert",
-    "receiver",
+    "receive",
     "sender",
 ]
 
@@ -22,5 +22,5 @@ FRAMES_PER_SAMPLE = 64
 
 # dependencies
 from . import convert
-from . import receiver
+from . import receive
 from . import sender

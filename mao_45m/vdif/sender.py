@@ -10,7 +10,7 @@ from time import perf_counter
 
 
 # dependencies
-from tqdm import tqdm, trange
+from tqdm import trange
 from . import FRAMES_PER_SAMPLE, VDIF_FRAME_BYTES
 from .reader import get_ip_length
 
@@ -25,8 +25,8 @@ def send(
     *,
     group: str = "239.0.0.1",
     port: int = 11111,
-    progress: bool = False,
     repeat: bool = False,
+    status: bool | int = False,
     ttl: int = 1,
 ) -> None:
     """Send a VDIF file over UDP multicast.
@@ -35,8 +35,8 @@ def send(
         vdif: Path to the VDIF file.
         group: Multicast group address.
         port: Multicast port number.
-        progress: Whether to show a progress bar.
         repeat: Whether to repeat sending the VDIF file.
+        status: Whether to show the sending status.
         ttl: Time-to-live for multicast packets.
 
     """
@@ -53,7 +53,8 @@ def send(
                 for _ in trange(
                     n_frames,
                     desc=f"Sending {vdif}",
-                    disable=not progress,
+                    disable=not status,
+                    position=int(status) - 1,
                     unit="frame",
                     unit_scale=True,
                 ):

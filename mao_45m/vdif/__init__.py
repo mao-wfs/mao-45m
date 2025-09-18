@@ -7,7 +7,7 @@ __all__ = [
     "FRAMES_PER_SAMPLE",
     "convert",
     "receive",
-    "sender",
+    "send",
 ]
 
 
@@ -23,4 +23,4 @@ FRAMES_PER_SAMPLE = 64
 # dependencies
 from . import convert
 from . import receive
-from . import sender
+from . import send

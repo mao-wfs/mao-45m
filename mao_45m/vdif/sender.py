@@ -12,7 +12,7 @@ from time import perf_counter
 # dependencies
 from tqdm import trange
 from . import FRAMES_PER_SAMPLE, FRAME_BYTES
-from .reader import get_ip_length
+from .convert import get_ip_length
 
 
 # constants

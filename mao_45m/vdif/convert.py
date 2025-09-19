@@ -94,11 +94,13 @@ def get_samples(frames: list[bytes], /) -> xr.DataArray:
                 "id": ("time", ids),
                 "time": times,
             },
+            attrs={
+                "ip_length": get_ip_length(frames[0]),
+            },
         )
         .set_index(temp=("id", "time"))
         .unstack("temp")
-        .stack(temp=("chan", "id"))
-        .reset_index("temp")
+        .stack(temp=("chan", "id"), create_index=False)
     )
 
     return (

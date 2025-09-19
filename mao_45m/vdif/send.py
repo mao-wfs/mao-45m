@@ -13,6 +13,7 @@ from time import perf_counter
 from tqdm import trange
 from . import FRAMES_PER_SAMPLE, FRAME_BYTES
 from .convert import get_ip_length
+from ..utils import sleep
 
 
 # constants
@@ -72,12 +73,3 @@ def send(
                 send_once()
         except KeyboardInterrupt:
             LOGGER.warning("Sending interrupted by user.")
-
-
-def sleep(seconds: float, /) -> None:
-    """Busy-waiting sleep (more accurate but more CPU usage)."""
-    start = perf_counter()
-    end = start + seconds
-
-    while perf_counter() < end:
-        pass

@@ -1,10 +1,11 @@
-__all__ = ["subref", "vdif"]
+__all__ = ["subref", "vdif", "utils"]
 
 
 # dependencies
 from fire import Fire
 from . import subref
 from . import vdif
+from . import utils
 
 
 def main():

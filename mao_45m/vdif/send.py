@@ -12,7 +12,7 @@ from time import perf_counter
 # dependencies
 from tqdm import trange
 from . import FRAMES_PER_SAMPLE, FRAME_BYTES
-from .convert import get_ip_length
+from .convert import get_integ_time
 from ..utils import sleep
 
 
@@ -61,7 +61,7 @@ def send(
                 ):
                     start = perf_counter()
                     sock.sendto(frame := file.read(FRAME_BYTES), (group, port))
-                    seconds_per_frame = get_ip_length(frame) / 1000 / FRAMES_PER_SAMPLE
+                    seconds_per_frame = get_integ_time(frame) / FRAMES_PER_SAMPLE
                     end = perf_counter()
                     sleep(seconds_per_frame - (end - start))
 

@@ -4,6 +4,7 @@ __all__ = [
     "get_corr_data",
     "get_elapsed_seconds",
     "get_frame_number",
+    "get_integ_time",
     "get_ip_length",
     "get_reference_epoch",
     "get_samples",
@@ -64,6 +65,11 @@ def get_frame_number(frame: bytes, /) -> int:
     return get_word(frame[:VDIF_HEAD_BYTES], 1)[0:24]
 
 
+def get_integ_time(frame: bytes, /) -> float:
+    """Get the integration time in seconds (0.005 or 0.010)."""
+    return get_ip_length(frame) / 1000
+
+
 def get_ip_length(frame: bytes, /) -> int:
     """Get the IP length (i.e. integration time) in ms (5 or 10)."""
     return get_word(frame[:VDIF_HEAD_BYTES], 4)[0:8]
@@ -75,7 +81,7 @@ def get_reference_epoch(frame: bytes, /) -> int:
 
 
 def get_samples(frames: list[bytes], /) -> xr.DataArray:
-    """Get VDIF samples from VDIF frames (time x chan)."""
+    """Get VDIF samples (time x chan) from VDIF frames."""
     data = []
     ids = []
     times = []

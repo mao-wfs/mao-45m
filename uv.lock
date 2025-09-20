@@ -700,6 +700,8 @@ source = { editable = "." }
 dependencies = [
     { name = "decode" },
     { name = "fire" },
+    { name = "matplotlib" },
+    { name = "ndtools" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas" },
@@ -724,6 +726,8 @@ dev = [
 requires-dist = [
     { name = "decode", specifier = ">=2025.6,<2026.0" },
     { name = "fire", specifier = ">=0.7,<1.0" },
+    { name = "matplotlib", specifier = ">=3,<4" },
+    { name = "ndtools", specifier = ">=1,<2" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "pandas", specifier = ">=2,<3" },
     { name = "pandas-stubs", specifier = ">=2,<3" },

@@ -5,9 +5,9 @@ __all__ = [
     "CORR_DATA_BYTES",
     "CHANS_PER_FRAME",
     "FRAMES_PER_SAMPLE",
-    "reader",
-    "receiver",
-    "sender",
+    "convert",
+    "receive",
+    "send",
 ]
 
 
@@ -21,6 +21,6 @@ FRAMES_PER_SAMPLE = 64
 
 
 # dependencies
-from . import reader
-from . import receiver
-from . import sender
+from . import convert
+from . import receive
+from . import send

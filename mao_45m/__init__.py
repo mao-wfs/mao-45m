@@ -1,10 +1,11 @@
-__all__ = ["subref", "vdif"]
+__all__ = ["subref", "vdif", "utils"]
 
 
 # dependencies
 from fire import Fire
 from . import subref
 from . import vdif
+from . import utils
 
 
 def main():
@@ -12,8 +13,8 @@ def main():
         {
             "subref": {"run": subref.run},
             "vdif": {
-                "receive": vdif.receiver.receive,
-                "send": vdif.sender.send,
+                "receive": vdif.receive.receive,
+                "send": vdif.send.send,
             },
         }
     )

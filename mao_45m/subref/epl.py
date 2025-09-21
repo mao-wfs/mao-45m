@@ -85,7 +85,7 @@ def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
         target=udp_receiver, args=(sock, udp_ready_event), daemon=True
     )
     receiver_thread.start()
-    print("Starting receiver thread...")
+    LOGGER.debug("Starting receiver thread...")
 
 
 def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
@@ -118,7 +118,7 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
     time_2 = start_time + middle_time
     time_3 = (last_time - start_time) / 2 + start_time
 
-    print(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
+    LOGGER.debug(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
 
     ds = xr.Dataset(
         {
@@ -189,7 +189,7 @@ def set_socket(
 
 def udp_receiver(sock, udp_ready_event):
 
-    print("デーモン開始")
+    LOGGER.debug("デーモン開始")
     while True:
         temp_buffer = []
         # 最初の受信処理
@@ -218,13 +218,13 @@ def udp_receiver(sock, udp_ready_event):
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
             if len(frame) != N_BYTES_PER_UNIT:
-                print(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
+                LOGGER.debug(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
                 break
             temp_buffer.append(frame)
 
             if len(temp_buffer) == N_UNITS_PER_SCAN:
                 if not check_channel_order(temp_buffer):
-                    print("⚠️ チャンネル順異常のため、最初から受信し直します")
+                    LOGGER.debug("⚠️ チャンネル順異常のため、最初から受信し直します")
                     break
                 with lock:
                     packet_buffer.append(list(temp_buffer))
@@ -305,7 +305,7 @@ def check_channel_order(packet_set: list[bytes]) -> bool:
     if ch_list == expected:
         return True
     else:
-        print("⚠️ チャンネル順に異常あり！")
+        LOGGER.debug("⚠️ チャンネル順に異常あり！")
         return False
 
 

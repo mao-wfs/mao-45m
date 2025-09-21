@@ -12,9 +12,8 @@ __all__ = [
 import re
 from datetime import datetime, timedelta
 from struct import Struct
-from typing import Callable, Optional, Pattern, NamedTuple
+from typing import Callable, Pattern, NamedTuple
 from scipy.optimize import curve_fit
-import threading
 from collections import deque
 
 # dependent packages
@@ -45,21 +44,12 @@ REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")  # UTC
 REF_EPOCH_UNIT = np.timedelta64(6, "M")
 
 
-from threading import Event
-from socket import (
-    IP_ADD_MEMBERSHIP,
-    IPPROTO_IP,
-    SO_REUSEADDR,
-    SOL_SOCKET,
-    inet_aton,
-    socket,
-)
-import socket
+from threading import Event, Lock, Thread
 from logging import getLogger
 
 LOGGER = getLogger(__name__)
 packet_buffer = deque(maxlen=6000)
-lock = threading.Lock()
+lock = Lock()
 
 
 feed = ["c", "t", "r", "b", "l"]
@@ -69,7 +59,7 @@ freq = np.array([])
 freq_selected = np.array([])
 count = np.zeros(5, dtype=int)
 spectra = np.zeros((5, 375), dtype=np.complex128)
-udp_ready_event = threading.Event()
+udp_ready_event = Event()
 
 
 def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
@@ -82,7 +72,7 @@ def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
     freq = get_freq(chbin)
     freq_selected = freq[(freq >= 19.5) & (freq <= 22.5)]
 
-    receiver_thread = threading.Thread(
+    receiver_thread = Thread(
         target=udp_receiver, args=(sock, udp_ready_event), daemon=True
     )
     receiver_thread.start()

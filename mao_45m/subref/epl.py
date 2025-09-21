@@ -75,7 +75,7 @@ def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
     LOGGER.debug("Starting receiver thread...")
 
 
-def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
+def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.DataArray:
     d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")  # type: ignore
     UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
@@ -105,41 +105,41 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
 
     LOGGER.debug(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
 
-    ds = xr.Dataset(
-        {
-            "c": (("time", "freq"), np.array(SPECTRA[0] / COUNT[0])[np.newaxis, :]),
-            "t": (("time", "freq"), np.array(SPECTRA[1] / COUNT[1])[np.newaxis, :]),
-            "r": (("time", "freq"), np.array(SPECTRA[2] / COUNT[2])[np.newaxis, :]),
-            "b": (("time", "freq"), np.array(SPECTRA[3] / COUNT[3])[np.newaxis, :]),
-            "l": (("time", "freq"), np.array(SPECTRA[4] / COUNT[4])[np.newaxis, :]),
-        },
+    return xr.DataArray(
+        data=[
+            np.array(SPECTRA[0] / COUNT[0]),
+            np.array(SPECTRA[1] / COUNT[1]),
+            np.array(SPECTRA[2] / COUNT[2]),
+            np.array(SPECTRA[3] / COUNT[3]),
+            np.array(SPECTRA[4] / COUNT[4]),
+        ],
+        dims=("feed", "freq"),
         coords={
-            "time": np.array([time_1]),
-            "freq": np.array(FREQ_SELECTED),
+            "feed": FEED,
+            "freq": FREQ_SELECTED,
+            "time": last_time,
         },
     )
 
-    return ds
 
-
-def calc_epl(spec: xr.Dataset) -> xr.Dataset:
+def calc_epl(spec: xr.DataArray) -> xr.DataArray:
     freq = spec.coords["freq"].values
 
     epl_dict = {}
     for f in ["c", "t", "r", "b", "l"]:
-        epl_dict[f] = get_epl(np.ravel(spec[f].values), freq)
+        epl_dict[f] = get_epl(spec.sel(feed=f).data, freq)
 
-    ds = xr.Dataset(
-        {
-            "c": (("time",), np.array([epl_dict["c"]])),
-            "t": (("time",), np.array([epl_dict["t"]])),
-            "r": (("time",), np.array([epl_dict["r"]])),
-            "b": (("time",), np.array([epl_dict["b"]])),
-            "l": (("time",), np.array([epl_dict["l"]])),
-        }
+    return xr.DataArray(
+        data=[
+            epl_dict["c"],
+            epl_dict["t"],
+            epl_dict["r"],
+            epl_dict["b"],
+            epl_dict["l"],
+        ],
+        dims="feed",
+        coords={"feed": FEED, "time": spec.coords["time"]},
     )
-
-    return ds
 
 
 def udp_receiver(sock, udp_ready_event):
@@ -173,13 +173,13 @@ def udp_receiver(sock, udp_ready_event):
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
             if len(frame) != N_BYTES_PER_UNIT:
-                LOGGER.debug(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
+                LOGGER.warning(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
                 break
             temp_buffer.append(frame)
 
             if len(temp_buffer) == N_UNITS_PER_SCAN:
                 if not check_channel_order(temp_buffer):
-                    LOGGER.debug("⚠️ チャンネル順異常のため、最初から受信し直します")
+                    LOGGER.warning("⚠️ チャンネル順異常のため、最初から受信し直します")
                     break
                 with LOCK:
                     PACKET_BUFFER.append(list(temp_buffer))

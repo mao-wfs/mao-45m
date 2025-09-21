@@ -1,5 +1,4 @@
 __all__ = [
-    "set_socket",
     "udp_receiver",
     "get_latest_packets",
     "generate_patterned",
@@ -20,8 +19,10 @@ from collections import deque
 
 # dependent packages
 import numpy as np
-from numpy.typing import NDArray
 import xarray as xr
+from numpy.typing import NDArray
+from ..vdif.receive import get_socket
+
 
 # constants
 LITTLE_ENDIAN: str = "<"
@@ -74,7 +75,7 @@ udp_ready_event = threading.Event()
 def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
     global make_pattern, pattern_len, freq, freq_selected
 
-    sock = set_socket(dest_addr, dest_port, group=group)
+    sock = get_socket(port=dest_port, group=group)
     n_offset_2024 = 2  #  #2024年のオフセット
     make_pattern = generate_patterned(pattern, n_offset_2024)
     pattern_len = len(make_pattern)
@@ -155,36 +156,6 @@ def calc_epl(spec: xr.Dataset) -> xr.Dataset:
     )
 
     return ds
-
-
-def set_socket(
-    dest_addr: str,  # このスクリプトを実行するマシンのIPアドレス
-    dest_port: int,  # このスクリプトを実行するマシンのポート番号
-    *,
-    group: str,
-    cancel: Optional[Event] = None,
-    timeout: Optional[float] = None,
-):
-    """Receive and filter DRS4 data frames per input, returning only those matching bit criteria.
-
-    Args:
-        dest_addr: Destination IP address.
-        dest_port: Destination port number.
-        group: Multicast group IP address.
-        cancel: Event object to cancel dumping.
-        timeout: Timeout period in units of seconds.
-        progress: Whether to show the progress bar on screen.
-
-    """
-    prefix = f"[{dest_addr=}, {dest_port=}]"
-    mreq = inet_aton(group) + inet_aton(dest_addr)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-
-    sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-    sock.bind(("", dest_port))
-    sock.setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP, mreq)
-    LOGGER.info(f"{prefix} Start dumping data.")
-    return sock
 
 
 def udp_receiver(sock, udp_ready_event):

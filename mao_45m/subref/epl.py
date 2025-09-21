@@ -1,16 +1,9 @@
-__all__ = [
-    "udp_receiver",
-    "get_latest_packets",
-    "generate_patterned",
-    "get_nth_spectrum_in_range",
-    "get_epl",
-    "get_n_from_current_time",
-    "get_freq",
-]
+__all__ = ["calc_epl", "get_spectra", "setup"]
 
 
 # standard library
 from collections import deque
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from logging import getLogger
 from scipy.optimize import curve_fit
@@ -52,43 +45,54 @@ COUNT = np.zeros(5, dtype=int)
 FEED = ["c", "t", "r", "b", "l"]
 FREQ = np.array([])
 FREQ_SELECTED = np.array([])
-MAKE_PATTERN = "xxxxx"
+MAKE_PATTERN = tuple("ccccxttttxrrrrxbbbbxllllx")
 PATTERN_LEN = 0
 SPECTRA = np.zeros((5, 375), dtype=np.complex128)
 UDP_READY_EVENT = Event()
 
 
-def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
+def setup(
+    *,
+    feed_pattern: Sequence[str],
+    freq_binning: int = 8,
+    group: str = "239.0.0.1",
+    port: int = 11111,
+) -> None:
     global MAKE_PATTERN, PATTERN_LEN, FREQ, FREQ_SELECTED
 
-    sock = get_socket(port=dest_port, group=group)
-    n_offset_2024 = 2  #  #2024年のオフセット
-    MAKE_PATTERN = generate_patterned(pattern, n_offset_2024)
+    sock = get_socket(group=group, port=port)
+    MAKE_PATTERN = feed_pattern
     PATTERN_LEN = len(MAKE_PATTERN)
-    FREQ = get_freq(chbin)
+    FREQ = get_freq(freq_binning)
     FREQ_SELECTED = FREQ[(FREQ >= 19.5) & (FREQ <= 22.5)]
 
     receiver_thread = Thread(
-        target=udp_receiver, args=(sock, UDP_READY_EVENT), daemon=True
+        target=udp_receiver,
+        args=(sock, UDP_READY_EVENT),
+        daemon=True,
     )
     receiver_thread.start()
     LOGGER.debug("Starting receiver thread...")
 
 
-def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.DataArray:
-    d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")  # type: ignore
+def get_spectra(
+    feed_origin: str,
+    freq_binning: int = 8,
+    size: int = 25,
+) -> xr.DataArray:
+    feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
-    scan = get_latest_packets(a)
+    scan = get_latest_packets(size)
 
-    for i in range(a):
+    for i in range(size):
         frames = scan[i]
-        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, chbin)
+        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, freq_binning)
         if i == 0:
             start_time = data_time
 
-        n = get_n_from_current_time(d0, data_time, delay)  # type: ignore
+        n = get_n_from_current_time(feed_origin, data_time)  # type: ignore
         target = MAKE_PATTERN[n % PATTERN_LEN]
         if target == "x":
             continue
@@ -98,7 +102,7 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.DataArray:
         COUNT[f] += 1
 
     last_time = data_time
-    middle_time = timedelta(seconds=a * TIME_PER_SCAN / 2)
+    middle_time = timedelta(seconds=size * TIME_PER_SCAN / 2)
     time_1 = last_time - middle_time
     time_2 = start_time + middle_time
     time_3 = (last_time - start_time) / 2 + start_time
@@ -267,7 +271,7 @@ def check_channel_order(packet_set: list[bytes]) -> bool:
 # main features
 def get_spectrum(
     scan: xr.Dataset,
-    chbin: int = 8,
+    freq_binning: int = 8,
 ) -> tuple[datetime, np.ndarray]:
     n_integ = 1
     n_units = N_UNITS_PER_SCAN * n_integ
@@ -282,14 +286,14 @@ def get_spectrum(
         spectra[i] = parse_corr_data(corr_data)
 
     spectra = spectra.reshape([n_integ, N_UNITS_PER_SCAN * n_chans])
-    spectrum = integrate_spectra(spectra, chbin)
+    spectrum = integrate_spectra(spectra, freq_binning)
     return time, spectrum
 
 
 def get_nth_spectrum_in_range(
-    scan: xr.Dataset, freq: np.ndarray, chbin: int = 8
+    scan: xr.Dataset, freq: np.ndarray, freq_binning: int = 8
 ) -> tuple[datetime, np.ndarray]:
-    time, spec = get_spectrum(scan, chbin)
+    time, spec = get_spectrum(scan, freq_binning)
     filtered_spec = spec[(freq >= 19.5) & (freq <= 22.5)]
     return time, filtered_spec
 
@@ -308,17 +312,8 @@ def get_freq(bin_width: int = 8, n_chans: int = 2048) -> np.ndarray:
     return freq
 
 
-# パターン生成
-def generate_patterned(pattern: str, offset: int = 0) -> str:
-    # 文字列としてロール
-    result = pattern[offset:] + pattern[:offset]
-    return result
-
-
-def get_n_from_current_time(
-    start_time: datetime, data_time: datetime, delay: float = 0.0
-) -> int:
-    dt = (data_time - start_time - timedelta(seconds=delay)).total_seconds()
+def get_n_from_current_time(start_time: datetime, data_time: datetime) -> int:
+    dt = (data_time - start_time).total_seconds()
     n = int(round(dt / TIME_PER_SCAN)) - 1
     return n
 
@@ -341,9 +336,9 @@ def line_through_origin(freq: np.ndarray, slope: float) -> np.ndarray:
     return slope * freq
 
 
-def integrate_spectra(spectra: np.ndarray, chbin: int = 8) -> np.ndarray:
+def integrate_spectra(spectra: np.ndarray, freq_binning: int = 8) -> np.ndarray:
     spectrum = spectra.mean(0)
-    return spectrum.reshape([len(spectrum) // chbin, chbin]).mean(1)
+    return spectrum.reshape([len(spectrum) // freq_binning, freq_binning]).mean(1)
 
 
 # struct readers

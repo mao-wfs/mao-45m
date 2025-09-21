@@ -1,8 +1,9 @@
-__all__ = ["subref", "vdif", "utils"]
+__all__ = ["cosmos", "subref", "vdif", "utils"]
 
 
 # dependencies
 from fire import Fire
+from . import cosmos
 from . import subref
 from . import vdif
 from . import utils
@@ -11,6 +12,10 @@ from . import utils
 def main():
     Fire(
         {
+            "cosmos": {
+                "receive": cosmos.receive,
+                "send": cosmos.send,
+            },
             "subref": {"run": subref.run},
             "vdif": {
                 "receive": vdif.receive.receive,

@@ -8,15 +8,18 @@ __all__ = [
     "get_freq",
 ]
 
-# standard library
-import re
-from datetime import datetime, timedelta
-from struct import Struct
-from typing import Callable, Pattern, NamedTuple
-from scipy.optimize import curve_fit
-from collections import deque
 
-# dependent packages
+# standard library
+from collections import deque
+from datetime import datetime, timedelta
+from logging import getLogger
+from scipy.optimize import curve_fit
+from struct import Struct
+from threading import Event, Lock, Thread
+from typing import Callable, NamedTuple
+
+
+# dependencies
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
@@ -24,84 +27,75 @@ from ..vdif.receive import get_socket
 
 
 # constants
+C = 299_792_458  # m/s
 LITTLE_ENDIAN: str = "<"
-UINT: str = "I"
-SHORT: str = "h"
-N_ROWS_VDIF_HEAD: int = 8
-N_ROWS_CORR_HEAD: int = 64
-N_ROWS_CORR_DATA: int = 512
-N_UNITS_PER_SCAN: int = 64
-N_BYTES_PER_UNIT: int = 1312  #
-N_BYTES_PER_SCAN: int = 1312 * 64
-TIME_PER_SCAN: float = 1e-2
-TIME_FORMAT: str = "%Y%j%H%M%S%f"
-VDIF_PATTERN: Pattern = re.compile(r"\w+_(\d+)_\d.vdif")
-LOWER_FREQ_MHZ = 16384
-N_CHANS_FOR_FORMAT = 2048
-C = 299792458  # m/s
-PI = np.pi
-REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")  # UTC
-REF_EPOCH_UNIT = np.timedelta64(6, "M")
-
-
-from threading import Event, Lock, Thread
-from logging import getLogger
-
+LOCK = Lock()
 LOGGER = getLogger(__name__)
-packet_buffer = deque(maxlen=6000)
-lock = Lock()
+LOWER_FREQ_MHZ = 16384
+N_BYTES_PER_SCAN: int = 1312 * 64
+N_BYTES_PER_UNIT: int = 1312
+N_CHANS_FOR_FORMAT = 2048
+N_ROWS_CORR_DATA: int = 512
+N_ROWS_CORR_HEAD: int = 64
+N_ROWS_VDIF_HEAD: int = 8
+N_UNITS_PER_SCAN: int = 64
+PACKET_BUFFER = deque(maxlen=6000)
+REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")
+REF_EPOCH_UNIT = np.timedelta64(6, "M")
+SHORT: str = "h"
+TIME_PER_SCAN: float = 1e-2
+UINT: str = "I"
 
 
-feed = ["c", "t", "r", "b", "l"]
-make_pattern = "xxxxx"
-pattern_len = 0
-freq = np.array([])
-freq_selected = np.array([])
-count = np.zeros(5, dtype=int)
-spectra = np.zeros((5, 375), dtype=np.complex128)
-udp_ready_event = Event()
+# global variables
+COUNT = np.zeros(5, dtype=int)
+FEED = ["c", "t", "r", "b", "l"]
+FREQ = np.array([])
+FREQ_SELECTED = np.array([])
+MAKE_PATTERN = "xxxxx"
+PATTERN_LEN = 0
+SPECTRA = np.zeros((5, 375), dtype=np.complex128)
+UDP_READY_EVENT = Event()
 
 
 def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
-    global make_pattern, pattern_len, freq, freq_selected
+    global MAKE_PATTERN, PATTERN_LEN, FREQ, FREQ_SELECTED
 
     sock = get_socket(port=dest_port, group=group)
     n_offset_2024 = 2  #  #2024年のオフセット
-    make_pattern = generate_patterned(pattern, n_offset_2024)
-    pattern_len = len(make_pattern)
-    freq = get_freq(chbin)
-    freq_selected = freq[(freq >= 19.5) & (freq <= 22.5)]
+    MAKE_PATTERN = generate_patterned(pattern, n_offset_2024)
+    PATTERN_LEN = len(MAKE_PATTERN)
+    FREQ = get_freq(chbin)
+    FREQ_SELECTED = FREQ[(FREQ >= 19.5) & (FREQ <= 22.5)]
 
     receiver_thread = Thread(
-        target=udp_receiver, args=(sock, udp_ready_event), daemon=True
+        target=udp_receiver, args=(sock, UDP_READY_EVENT), daemon=True
     )
     receiver_thread.start()
     LOGGER.debug("Starting receiver thread...")
 
 
 def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
-    global udp_ready_event
-
     d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")  # type: ignore
-    udp_ready_event.clear()
-    udp_ready_event.wait()
-    udp_ready_event.clear()
+    UDP_READY_EVENT.clear()
+    UDP_READY_EVENT.wait()
+    UDP_READY_EVENT.clear()
     scan = get_latest_packets(a)
 
     for i in range(a):
         frames = scan[i]
-        data_time, spectrum = get_nth_spectrum_in_range(frames, freq, chbin)
+        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, chbin)
         if i == 0:
             start_time = data_time
 
         n = get_n_from_current_time(d0, data_time, delay)  # type: ignore
-        target = make_pattern[n % pattern_len]
+        target = MAKE_PATTERN[n % PATTERN_LEN]
         if target == "x":
             continue
 
-        f = feed.index(target)
-        spectra[f] += spectrum
-        count[f] += 1
+        f = FEED.index(target)
+        SPECTRA[f] += spectrum
+        COUNT[f] += 1
 
     last_time = data_time
     middle_time = timedelta(seconds=a * TIME_PER_SCAN / 2)
@@ -113,15 +107,15 @@ def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
 
     ds = xr.Dataset(
         {
-            "c": (("time", "freq"), np.array(spectra[0] / count[0])[np.newaxis, :]),
-            "t": (("time", "freq"), np.array(spectra[1] / count[1])[np.newaxis, :]),
-            "r": (("time", "freq"), np.array(spectra[2] / count[2])[np.newaxis, :]),
-            "b": (("time", "freq"), np.array(spectra[3] / count[3])[np.newaxis, :]),
-            "l": (("time", "freq"), np.array(spectra[4] / count[4])[np.newaxis, :]),
+            "c": (("time", "freq"), np.array(SPECTRA[0] / COUNT[0])[np.newaxis, :]),
+            "t": (("time", "freq"), np.array(SPECTRA[1] / COUNT[1])[np.newaxis, :]),
+            "r": (("time", "freq"), np.array(SPECTRA[2] / COUNT[2])[np.newaxis, :]),
+            "b": (("time", "freq"), np.array(SPECTRA[3] / COUNT[3])[np.newaxis, :]),
+            "l": (("time", "freq"), np.array(SPECTRA[4] / COUNT[4])[np.newaxis, :]),
         },
         coords={
-            "time": np.array([time_1], dtype="M8"),
-            "freq": np.array(freq_selected),
+            "time": np.array([time_1]),
+            "freq": np.array(FREQ_SELECTED),
         },
     )
 
@@ -187,8 +181,8 @@ def udp_receiver(sock, udp_ready_event):
                 if not check_channel_order(temp_buffer):
                     LOGGER.debug("⚠️ チャンネル順異常のため、最初から受信し直します")
                     break
-                with lock:
-                    packet_buffer.append(list(temp_buffer))
+                with LOCK:
+                    PACKET_BUFFER.append(list(temp_buffer))
                 temp_buffer.clear()
                 udp_ready_event.set()
 
@@ -252,8 +246,8 @@ def read_head(frame: bytes) -> head_data:
 
 
 def get_latest_packets(a: int) -> list:
-    with lock:
-        return list(packet_buffer)[-a:]
+    with LOCK:
+        return list(PACKET_BUFFER)[-a:]
 
 
 def check_channel_order(packet_set: list[bytes]) -> bool:
@@ -304,7 +298,7 @@ def get_epl(spec: np.ndarray, freq: np.ndarray) -> float:
     fit = curve_fit(line_through_origin, freq, get_phase(spec))
     slope = fit[0]
     slope = slope[0]
-    epl = (C * slope * 1e-9) / (2 * PI)
+    epl = (C * slope * 1e-9) / (2 * np.pi)
     return epl
 
 

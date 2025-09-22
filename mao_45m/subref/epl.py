@@ -1,195 +1,154 @@
-__all__ = [
-    "set_socket",
-    "udp_receiver",
-    "get_latest_packets",
-    "generate_patterned",
-    "get_nth_spectrum_in_range",
-    "get_epl",
-    "get_n_from_current_time",
-    "get_freq",
-]
+__all__ = ["calc_epl", "get_spectra", "setup"]
+
 
 # standard library
-import re
-from datetime import datetime, timedelta
-from struct import Struct
-from typing import Callable, Optional, Pattern, NamedTuple
-from scipy.optimize import curve_fit
-import threading
 from collections import deque
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+from logging import getLogger
+from scipy.optimize import curve_fit
+from struct import Struct
+from threading import Event, Lock, Thread
+from typing import Callable, NamedTuple
 
-# dependent packages
+
+# dependencies
 import numpy as np
-from numpy.typing import NDArray
 import xarray as xr
+from numpy.typing import NDArray
+from ..vdif.receive import get_socket
+
 
 # constants
+C = 299_792_458  # m/s
 LITTLE_ENDIAN: str = "<"
-UINT: str = "I"
-SHORT: str = "h"
-N_ROWS_VDIF_HEAD: int = 8
-N_ROWS_CORR_HEAD: int = 64
-N_ROWS_CORR_DATA: int = 512
-N_UNITS_PER_SCAN: int = 64
-N_BYTES_PER_UNIT: int = 1312  #
-N_BYTES_PER_SCAN: int = 1312 * 64
-TIME_PER_SCAN: float = 1e-2
-TIME_FORMAT: str = "%Y%j%H%M%S%f"
-VDIF_PATTERN: Pattern = re.compile(r"\w+_(\d+)_\d.vdif")
-LOWER_FREQ_MHZ = 16384
-N_CHANS_FOR_FORMAT = 2048
-C = 299792458  # m/s
-PI = np.pi
-REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")  # UTC
-REF_EPOCH_UNIT = np.timedelta64(6, "M")
-
-
-from threading import Event
-from socket import (
-    IP_ADD_MEMBERSHIP,
-    IPPROTO_IP,
-    SO_REUSEADDR,
-    SOL_SOCKET,
-    inet_aton,
-    socket,
-)
-import socket
-from logging import getLogger
-
+LOCK = Lock()
 LOGGER = getLogger(__name__)
-packet_buffer = deque(maxlen=6000)
-lock = threading.Lock()
+LOWER_FREQ_MHZ = 16384
+N_BYTES_PER_SCAN: int = 1312 * 64
+N_BYTES_PER_UNIT: int = 1312
+N_CHANS_FOR_FORMAT = 2048
+N_ROWS_CORR_DATA: int = 512
+N_ROWS_CORR_HEAD: int = 64
+N_ROWS_VDIF_HEAD: int = 8
+N_UNITS_PER_SCAN: int = 64
+PACKET_BUFFER = deque(maxlen=6000)
+REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")
+REF_EPOCH_UNIT = np.timedelta64(6, "M")
+SHORT: str = "h"
+TIME_PER_SCAN: float = 1e-2
+UINT: str = "I"
 
 
-feed = ["c", "t", "r", "b", "l"]
-make_pattern = "xxxxx"
-pattern_len = 0
-freq = np.array([])
-freq_selected = np.array([])
-count = np.zeros(5, dtype=int)
-spectra = np.zeros((5, 375), dtype=np.complex128)
-udp_ready_event = threading.Event()
+# global variables
+COUNT = np.zeros(5, dtype=int)
+FEED = ["c", "t", "r", "b", "l"]
+FREQ = np.array([])
+FREQ_SELECTED = np.array([])
+MAKE_PATTERN = tuple("ccccxttttxrrrrxbbbbxllllx")
+PATTERN_LEN = 0
+SPECTRA = np.zeros((5, 375), dtype=np.complex128)
+UDP_READY_EVENT = Event()
 
 
-def setup(pattern, chbin, dest_addr, dest_port, group) -> None:
-    global make_pattern, pattern_len, freq, freq_selected
+def setup(
+    *,
+    feed_pattern: Sequence[str],
+    freq_binning: int = 8,
+    group: str = "239.0.0.1",
+    port: int = 11111,
+) -> None:
+    global MAKE_PATTERN, PATTERN_LEN, FREQ, FREQ_SELECTED
 
-    sock = set_socket(dest_addr, dest_port, group=group)
-    n_offset_2024 = 2  #  #2024年のオフセット
-    make_pattern = generate_patterned(pattern, n_offset_2024)
-    pattern_len = len(make_pattern)
-    freq = get_freq(chbin)
-    freq_selected = freq[(freq >= 19.5) & (freq <= 22.5)]
+    sock = get_socket(group=group, port=port)
+    MAKE_PATTERN = feed_pattern
+    PATTERN_LEN = len(MAKE_PATTERN)
+    FREQ = get_freq(freq_binning)
+    FREQ_SELECTED = FREQ[(FREQ >= 19.5) & (FREQ <= 22.5)]
 
-    receiver_thread = threading.Thread(
-        target=udp_receiver, args=(sock, udp_ready_event), daemon=True
+    receiver_thread = Thread(
+        target=udp_receiver,
+        args=(sock, UDP_READY_EVENT),
+        daemon=True,
     )
     receiver_thread.start()
-    print("Starting receiver thread...")
+    LOGGER.debug("Starting receiver thread...")
 
 
-def get_spectra(d0: str, chbin: int, delay: float, a: int) -> xr.Dataset:
-    global udp_ready_event
+def get_spectra(
+    feed_origin: str,
+    freq_binning: int = 8,
+    size: int = 25,
+) -> xr.DataArray:
+    feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
+    UDP_READY_EVENT.clear()
+    UDP_READY_EVENT.wait()
+    UDP_READY_EVENT.clear()
+    scan = get_latest_packets(size)
 
-    d0 = datetime.strptime(d0, "%Y%m%dT%H%M%S")  # type: ignore
-    udp_ready_event.clear()
-    udp_ready_event.wait()
-    udp_ready_event.clear()
-    scan = get_latest_packets(a)
-
-    for i in range(a):
+    for i in range(size):
         frames = scan[i]
-        data_time, spectrum = get_nth_spectrum_in_range(frames, freq, chbin)
+        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, freq_binning)
         if i == 0:
             start_time = data_time
 
-        n = get_n_from_current_time(d0, data_time, delay)  # type: ignore
-        target = make_pattern[n % pattern_len]
+        n = get_n_from_current_time(feed_origin, data_time)  # type: ignore
+        target = MAKE_PATTERN[n % PATTERN_LEN]
         if target == "x":
             continue
 
-        f = feed.index(target)
-        spectra[f] += spectrum
-        count[f] += 1
+        f = FEED.index(target)
+        SPECTRA[f] += spectrum
+        COUNT[f] += 1
 
     last_time = data_time
-    middle_time = timedelta(seconds=a * TIME_PER_SCAN / 2)
+    middle_time = timedelta(seconds=size * TIME_PER_SCAN / 2)
     time_1 = last_time - middle_time
     time_2 = start_time + middle_time
     time_3 = (last_time - start_time) / 2 + start_time
 
-    print(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
+    LOGGER.debug(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
 
-    ds = xr.Dataset(
-        {
-            "c": (("time", "freq"), np.array(spectra[0] / count[0])[np.newaxis, :]),
-            "t": (("time", "freq"), np.array(spectra[1] / count[1])[np.newaxis, :]),
-            "r": (("time", "freq"), np.array(spectra[2] / count[2])[np.newaxis, :]),
-            "b": (("time", "freq"), np.array(spectra[3] / count[3])[np.newaxis, :]),
-            "l": (("time", "freq"), np.array(spectra[4] / count[4])[np.newaxis, :]),
-        },
+    return xr.DataArray(
+        data=[
+            np.array(SPECTRA[0] / COUNT[0]),
+            np.array(SPECTRA[1] / COUNT[1]),
+            np.array(SPECTRA[2] / COUNT[2]),
+            np.array(SPECTRA[3] / COUNT[3]),
+            np.array(SPECTRA[4] / COUNT[4]),
+        ],
+        dims=("feed", "freq"),
         coords={
-            "time": np.array([time_1], dtype="M8"),
-            "freq": np.array(freq_selected),
+            "feed": FEED,
+            "freq": FREQ_SELECTED,
+            "time": last_time,
         },
     )
 
-    return ds
 
-
-def calc_epl(spec: xr.Dataset) -> xr.Dataset:
+def calc_epl(spec: xr.DataArray) -> xr.DataArray:
     freq = spec.coords["freq"].values
 
     epl_dict = {}
     for f in ["c", "t", "r", "b", "l"]:
-        epl_dict[f] = get_epl(np.ravel(spec[f].values), freq)
+        epl_dict[f] = get_epl(spec.sel(feed=f).data, freq)
 
-    ds = xr.Dataset(
-        {
-            "c": (("time",), np.array([epl_dict["c"]])),
-            "t": (("time",), np.array([epl_dict["t"]])),
-            "r": (("time",), np.array([epl_dict["r"]])),
-            "b": (("time",), np.array([epl_dict["b"]])),
-            "l": (("time",), np.array([epl_dict["l"]])),
-        }
+    return xr.DataArray(
+        data=[
+            epl_dict["c"],
+            epl_dict["t"],
+            epl_dict["r"],
+            epl_dict["b"],
+            epl_dict["l"],
+        ],
+        dims="feed",
+        coords={"feed": FEED, "time": spec.coords["time"]},
     )
-
-    return ds
-
-
-def set_socket(
-    dest_addr: str,  # このスクリプトを実行するマシンのIPアドレス
-    dest_port: int,  # このスクリプトを実行するマシンのポート番号
-    *,
-    group: str,
-    cancel: Optional[Event] = None,
-    timeout: Optional[float] = None,
-):
-    """Receive and filter DRS4 data frames per input, returning only those matching bit criteria.
-
-    Args:
-        dest_addr: Destination IP address.
-        dest_port: Destination port number.
-        group: Multicast group IP address.
-        cancel: Event object to cancel dumping.
-        timeout: Timeout period in units of seconds.
-        progress: Whether to show the progress bar on screen.
-
-    """
-    prefix = f"[{dest_addr=}, {dest_port=}]"
-    mreq = inet_aton(group) + inet_aton(dest_addr)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-
-    sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-    sock.bind(("", dest_port))
-    sock.setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP, mreq)
-    LOGGER.info(f"{prefix} Start dumping data.")
-    return sock
 
 
 def udp_receiver(sock, udp_ready_event):
 
-    print("デーモン開始")
+    LOGGER.debug("デーモン開始")
     while True:
         temp_buffer = []
         # 最初の受信処理
@@ -218,16 +177,16 @@ def udp_receiver(sock, udp_ready_event):
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
             if len(frame) != N_BYTES_PER_UNIT:
-                print(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
+                LOGGER.warning(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
                 break
             temp_buffer.append(frame)
 
             if len(temp_buffer) == N_UNITS_PER_SCAN:
                 if not check_channel_order(temp_buffer):
-                    print("⚠️ チャンネル順異常のため、最初から受信し直します")
+                    LOGGER.warning("⚠️ チャンネル順異常のため、最初から受信し直します")
                     break
-                with lock:
-                    packet_buffer.append(list(temp_buffer))
+                with LOCK:
+                    PACKET_BUFFER.append(list(temp_buffer))
                 temp_buffer.clear()
                 udp_ready_event.set()
 
@@ -291,8 +250,8 @@ def read_head(frame: bytes) -> head_data:
 
 
 def get_latest_packets(a: int) -> list:
-    with lock:
-        return list(packet_buffer)[-a:]
+    with LOCK:
+        return list(PACKET_BUFFER)[-a:]
 
 
 def check_channel_order(packet_set: list[bytes]) -> bool:
@@ -305,14 +264,14 @@ def check_channel_order(packet_set: list[bytes]) -> bool:
     if ch_list == expected:
         return True
     else:
-        print("⚠️ チャンネル順に異常あり！")
+        LOGGER.debug("⚠️ チャンネル順に異常あり！")
         return False
 
 
 # main features
 def get_spectrum(
     scan: xr.Dataset,
-    chbin: int = 8,
+    freq_binning: int = 8,
 ) -> tuple[datetime, np.ndarray]:
     n_integ = 1
     n_units = N_UNITS_PER_SCAN * n_integ
@@ -327,14 +286,14 @@ def get_spectrum(
         spectra[i] = parse_corr_data(corr_data)
 
     spectra = spectra.reshape([n_integ, N_UNITS_PER_SCAN * n_chans])
-    spectrum = integrate_spectra(spectra, chbin)
+    spectrum = integrate_spectra(spectra, freq_binning)
     return time, spectrum
 
 
 def get_nth_spectrum_in_range(
-    scan: xr.Dataset, freq: np.ndarray, chbin: int = 8
+    scan: xr.Dataset, freq: np.ndarray, freq_binning: int = 8
 ) -> tuple[datetime, np.ndarray]:
-    time, spec = get_spectrum(scan, chbin)
+    time, spec = get_spectrum(scan, freq_binning)
     filtered_spec = spec[(freq >= 19.5) & (freq <= 22.5)]
     return time, filtered_spec
 
@@ -343,7 +302,7 @@ def get_epl(spec: np.ndarray, freq: np.ndarray) -> float:
     fit = curve_fit(line_through_origin, freq, get_phase(spec))
     slope = fit[0]
     slope = slope[0]
-    epl = (C * slope * 1e-9) / (2 * PI)
+    epl = (C * slope * 1e-9) / (2 * np.pi)
     return epl
 
 
@@ -353,17 +312,8 @@ def get_freq(bin_width: int = 8, n_chans: int = 2048) -> np.ndarray:
     return freq
 
 
-# パターン生成
-def generate_patterned(pattern: str, offset: int = 0) -> str:
-    # 文字列としてロール
-    result = pattern[offset:] + pattern[:offset]
-    return result
-
-
-def get_n_from_current_time(
-    start_time: datetime, data_time: datetime, delay: float = 0.0
-) -> int:
-    dt = (data_time - start_time - timedelta(seconds=delay)).total_seconds()
+def get_n_from_current_time(start_time: datetime, data_time: datetime) -> int:
+    dt = (data_time - start_time).total_seconds()
     n = int(round(dt / TIME_PER_SCAN)) - 1
     return n
 
@@ -386,9 +336,9 @@ def line_through_origin(freq: np.ndarray, slope: float) -> np.ndarray:
     return slope * freq
 
 
-def integrate_spectra(spectra: np.ndarray, chbin: int = 8) -> np.ndarray:
+def integrate_spectra(spectra: np.ndarray, freq_binning: int = 8) -> np.ndarray:
     spectrum = spectra.mean(0)
-    return spectrum.reshape([len(spectrum) // chbin, chbin]).mean(1)
+    return spectrum.reshape([len(spectrum) // freq_binning, freq_binning]).mean(1)
 
 
 # struct readers

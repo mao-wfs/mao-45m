@@ -49,7 +49,7 @@ class Converter:
     gain_dZ: float = 0.1
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0)
 
-    def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:
+    def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:  # type: ignore
         """Convert EPL to subreflector parameters.
 
         Args:

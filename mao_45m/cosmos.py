@@ -1,4 +1,4 @@
-__all__ = ["Cosmos", "State", "Subref", "get_socket", "receive", "send"]
+__all__ = ["Cosmos", "State", "Subref", "get_cosmos", "get_socket", "receive", "send"]
 
 
 # standard library
@@ -161,6 +161,20 @@ class Subref:
             raise ValueError("Could not parse the COSMOS response of dZ.")
 
         return cls(dX=float(match_dX[1]), dZ=float(match_dZ[1]))
+
+
+def get_cosmos(host: str = "127.0.0.1", port: int = 11111, /) -> Cosmos:
+    """Get a COSMOS client for the Nobeyama 45m telescope.
+
+    Args:
+        host: IP address of the COSMOS server.
+        port: Port number of the COSMOS server.
+
+    Returns:
+        COSMOS client for the Nobeyama 45m telescope.
+
+    """
+    return Cosmos(host=host, port=port)
 
 
 def receive(

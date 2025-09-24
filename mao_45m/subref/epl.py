@@ -1,9 +1,10 @@
-__all__ = ["calc_epl", "get_spectra", "setup"]
+__all__ = ["calc_epl", "get_spectra", "setup_receiver"]
 
 
 # standard library
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from logging import getLogger
 from scipy.optimize import curve_fit
@@ -43,26 +44,34 @@ UINT: str = "I"
 # global variables
 COUNT = np.zeros(5, dtype=int)
 FEED = ["c", "t", "r", "b", "l"]
+FEED_PATTERN = tuple("ccccxttttxrrrrxbbbbxllllx")
 FREQ = np.array([])
 FREQ_SELECTED = np.array([])
-MAKE_PATTERN = tuple("ccccxttttxrrrrxbbbbxllllx")
-PATTERN_LEN = 0
 SPECTRA = np.zeros((5, 375), dtype=np.complex128)
 UDP_READY_EVENT = Event()
 
 
-def setup(
+@contextmanager
+def setup_receiver(
     *,
     feed_pattern: Sequence[str],
     freq_binning: int = 8,
     group: str = "239.0.0.1",
     port: int = 11111,
-) -> None:
-    global MAKE_PATTERN, PATTERN_LEN, FREQ, FREQ_SELECTED
+) -> Iterator[None]:
+    """Setup the UDP receiver for EPL calculation.
+
+    Args:
+        feed_pattern: Feed name pattern to be repeated.
+        freq_binning: Number of frequency channels to bin.
+        group: Multicast group address.
+        port: Multicast port number.
+
+    """
+    global FEED_PATTERN, FREQ, FREQ_SELECTED
 
     sock = get_socket(group=group, port=port)
-    MAKE_PATTERN = feed_pattern
-    PATTERN_LEN = len(MAKE_PATTERN)
+    FEED_PATTERN = feed_pattern
     FREQ = get_freq(freq_binning)
     FREQ_SELECTED = FREQ[(FREQ >= 19.5) & (FREQ <= 22.5)]
 
@@ -71,8 +80,15 @@ def setup(
         args=(sock, UDP_READY_EVENT),
         daemon=True,
     )
-    receiver_thread.start()
-    LOGGER.debug("Starting receiver thread...")
+
+    try:
+        LOGGER.debug("Starting receiver thread...")
+        receiver_thread.start()
+        yield
+    finally:
+        LOGGER.debug("Finishing receiver thread...")
+        receiver_thread.join(timeout=1.0)
+        sock.close()
 
 
 def get_spectra(
@@ -93,7 +109,7 @@ def get_spectra(
             start_time = data_time
 
         n = get_n_from_current_time(feed_origin, data_time)  # type: ignore
-        target = MAKE_PATTERN[n % PATTERN_LEN]
+        target = FEED_PATTERN[n % len(FEED_PATTERN)]
         if target == "x":
             continue
 

@@ -1,8 +1,17 @@
-__all__ = ["get_aggregated", "get_epl", "get_feed", "get_freq", "get_phase"]
+__all__ = [
+    "Converter",
+    "get_aggregated",
+    "get_converter",
+    "get_epl",
+    "get_feed",
+    "get_freq",
+    "get_phase",
+]
 
 
 # standard library
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 
 # dependencies
@@ -11,6 +20,7 @@ import xarray as xr
 from ndtools import Range
 from numpy.typing import NDArray
 from decode.stats import mean
+from ..cosmos import Cosmos
 
 
 # constants
@@ -20,10 +30,58 @@ FREQ_AT_CHAN8192 = 24576e6  # Hz
 FREQ_STEP = 1e6  # Hz
 
 
+@dataclass
+class Converter:
+    """Aggregated-to-EPL data converter for the Nobeyama 45m telescope.
+
+    Args:
+        cal_interval: Bandpass calibration interval (number or timedelta).
+            If None, calibration is done only once at the beginning.
+        last: Last aggregated data used for the bandpass calibration.
+            It should be None when a converter is created.
+
+    """
+
+    cal_interval: np.timedelta64 | int | None = None
+    count: int = field(default=0, init=False)
+    last: xr.DataArray | None = None
+
+    def __call__(
+        self, aggregated: xr.DataArray, /
+    ) -> tuple[xr.DataArray, xr.DataArray]:
+        """Get the EPL data (in m; feed) from the aggregated data.
+
+        Args:
+            aggregated: Aggregated data (feed x freq).
+
+        Returns:
+            Estimated EPL (in m; feed)
+            Estimated EPL at calibration (in m; feed).
+
+        """
+        if (
+            self.last is None
+            or (isinstance(n := self.cal_interval, int) and self.count >= n)
+            or (
+                isinstance(dt := self.cal_interval, np.timedelta64)
+                and aggregated.time - self.last.time >= dt
+            )
+        ):
+            self.last = aggregated
+            self.count = 0
+
+        self.count += 1
+        return (
+            get_epl(aggregated / self.last.data),
+            get_epl(self.last / self.last.data),
+        )
+
+
 def get_aggregated(
     samples: xr.DataArray,
     /,
     *,
+    el: float = 0.0,
     feed_origin: np.datetime64 | None = None,
     feed_pattern: NDArray[np.str_] | Sequence[str] = ("",),
     freq_binning: int = 8,
@@ -33,6 +91,7 @@ def get_aggregated(
 
     Args:
         samples: VDIF samples (time x chan).
+        el: Antenna elevation angle (in deg).
         feed_origin: Origin time for the feed name pattern.
         feed_pattern: Feed name pattern to be repeated.
         freq_binning: Number of frequency channels to bin.
@@ -46,15 +105,29 @@ def get_aggregated(
         samples.groupby(get_feed(samples, feed_pattern, feed_origin))
         .mean("time")
         .rename("aggregated")
-        .assign_coords(freq=get_freq(samples), time=samples.time[-1])
+        .assign_coords(el=el, freq=get_freq(samples), time=samples.time[-1])
         .swap_dims(chan="freq")
     )
     aggregated = mean(aggregated, dim={"freq": freq_binning})
     return aggregated.sel(freq=aggregated.freq == freq_range)
 
 
+def get_converter(cal_interval: np.timedelta64 | int | None = None, /) -> Converter:
+    """Get an aggregated-to-EPL data converter for the Nobeyama 45m telescope.
+
+    Args:
+        cal_interval: Bandpass calibration interval (number or timedelta).
+            If None, calibration is done only once at the beginning.
+
+    Returns:
+        Aggregated-to-EPL data converter.
+
+    """
+    return Converter(cal_interval=cal_interval)
+
+
 def get_epl(aggregated: xr.DataArray, /) -> xr.DataArray:
-    """Get the EPL (feed; in m) from the aggregated data."""
+    """Get the EPL data (in m; feed) from the aggregated data."""
     return (
         np.arctan2(aggregated.imag, aggregated.real)
         .curvefit("freq", get_phase)

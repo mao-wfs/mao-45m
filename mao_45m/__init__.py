@@ -16,7 +16,9 @@ def main():
                 "receive": cosmos.receive,
                 "send": cosmos.send,
             },
-            "subref": {"run": subref.run},
+            "subref": {
+                "control": subref.control.control,
+            },
             "vdif": {
                 "receive": vdif.receive.receive,
                 "send": vdif.send.send,

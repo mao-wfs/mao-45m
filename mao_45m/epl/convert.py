@@ -1,6 +1,7 @@
 __all__ = [
     "Converter",
     "get_aggregated",
+    "get_converter",
     "get_epl",
     "get_feed",
     "get_freq",
@@ -34,14 +35,14 @@ class Converter:
     """Aggregated-to-EPL data converter for the Nobeyama 45m telescope.
 
     Args:
-        interval: Bandpass calibration interval (number or timedelta).
+        cal_interval: Bandpass calibration interval (number or timedelta).
             If None, calibration is done only once at the beginning.
         last: Last aggregated data used for the bandpass calibration.
             It should be None when a converter is created.
 
     """
 
-    interval: np.timedelta64 | int | None = None
+    cal_interval: np.timedelta64 | int | None = None
     count: int = field(default=0, init=False)
     last: xr.DataArray | None = None
 
@@ -60,9 +61,9 @@ class Converter:
         """
         if (
             self.last is None
-            or (isinstance(n := self.interval, int) and self.count >= n)
+            or (isinstance(n := self.cal_interval, int) and self.count >= n)
             or (
-                isinstance(dt := self.interval, np.timedelta64)
+                isinstance(dt := self.cal_interval, np.timedelta64)
                 and aggregated.time - self.last.time >= dt
             )
         ):
@@ -109,6 +110,20 @@ def get_aggregated(
     )
     aggregated = mean(aggregated, dim={"freq": freq_binning})
     return aggregated.sel(freq=aggregated.freq == freq_range)
+
+
+def get_converter(cal_interval: np.timedelta64 | int | None = None, /) -> Converter:
+    """Get an aggregated-to-EPL data converter for the Nobeyama 45m telescope.
+
+    Args:
+        cal_interval: Bandpass calibration interval (number or timedelta).
+            If None, calibration is done only once at the beginning.
+
+    Returns:
+        Aggregated-to-EPL data converter.
+
+    """
+    return Converter(cal_interval=cal_interval)
 
 
 def get_epl(aggregated: xr.DataArray, /) -> xr.DataArray:

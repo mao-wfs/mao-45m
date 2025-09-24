@@ -1,4 +1,4 @@
-__all__ = ["Converter", "Subref"]
+__all__ = ["Converter", "Subref", "get_converter"]
 
 
 # standard library
@@ -83,3 +83,17 @@ class Converter:
     def on_failure(self) -> Subref:
         """Return the last subreflector parameters without updating."""
         return self.last
+
+
+def get_converter(gain_dX: float = 0.1, gain_dZ: float = 0.1, /) -> Converter:
+    """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
+
+    Args:
+        gain_dX: Propotional gain for the estimated dX.
+        gain_dZ: Propotional gain for the estimated dZ.
+
+    Returns:
+        EPL-to-subref parameter converter.
+
+    """
+    return Converter(gain_dX=gain_dX, gain_dZ=gain_dZ)

@@ -81,6 +81,8 @@ def get_spectra(
     size: int = 25,
 ) -> xr.DataArray:
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
+    COUNT = np.zeros(5, dtype=int)
+    SPECTRA = np.zeros((5, 375), dtype=np.complex128)
     UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
@@ -102,12 +104,10 @@ def get_spectra(
         COUNT[f] += 1
 
     last_time = data_time
-    middle_time = timedelta(seconds=size * TIME_PER_SCAN / 2)
-    time_1 = last_time - middle_time
-    time_2 = start_time + middle_time
-    time_3 = (last_time - start_time) / 2 + start_time
 
-    LOGGER.debug(f"time_1={time_1}, time_2={time_2}, time_3={time_3}")
+    LOGGER.debug(
+        f"start_time={start_time}, last_time={last_time}, d_time={last_time-start_time}"
+    )
 
     return xr.DataArray(
         data=[
@@ -147,11 +147,8 @@ def calc_epl(spec: xr.DataArray) -> xr.DataArray:
 
 
 def udp_receiver(sock, udp_ready_event):
-
-    LOGGER.debug("デーモン開始")
     while True:
         temp_buffer = []
-        # 最初の受信処理
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
             array = np.frombuffer(
@@ -177,13 +174,17 @@ def udp_receiver(sock, udp_ready_event):
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
             if len(frame) != N_BYTES_PER_UNIT:
-                LOGGER.warning(f"受信フレームサイズ異常: {len(frame)} bytes (スキップ)")
+                LOGGER.warning(
+                    f" Received frame size anomaly: {len(frame)} bytes. Sample skipped."
+                )
                 break
             temp_buffer.append(frame)
 
             if len(temp_buffer) == N_UNITS_PER_SCAN:
                 if not check_channel_order(temp_buffer):
-                    LOGGER.warning("⚠️ チャンネル順異常のため、最初から受信し直します")
+                    LOGGER.warning(
+                        "Channel sequence mismatch detected. Reinitializing reception."
+                    )
                     break
                 with LOCK:
                     PACKET_BUFFER.append(list(temp_buffer))
@@ -264,7 +265,6 @@ def check_channel_order(packet_set: list[bytes]) -> bool:
     if ch_list == expected:
         return True
     else:
-        LOGGER.debug("⚠️ チャンネル順に異常あり！")
         return False
 
 

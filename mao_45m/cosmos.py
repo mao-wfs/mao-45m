@@ -60,23 +60,26 @@ class Cosmos:
 
         Args:
             cmd: Command name or path to send the parameters.
-            dX: Offset (in mm) from the X cylinder position
+            dX: Offset (in m) from the X cylinder position
                 optimized for the gravity deformation correction.
-            dZ: Offset (in mm) from the Z cylinder positions (Z1 = Z2)
+            dZ: Offset (in m) from the Z cylinder positions (Z1 = Z2)
                 optimized for the gravity deformation correction.
 
         Returns:
             Current subreflector parameters received from COSMOS.
 
         """
-        self.sock.send((cmd_dX := f"{cmd} x {dX}") + "\n")  # type: ignore
+        # dX after m to mm conversion will be sent
+        self.sock.send((cmd_dX := f"{cmd} x {1e3 * dX}") + "\n")  # type: ignore
         LOGGER.debug(cmd_dX)
         resp_dX = self.sock.recv(64)
 
-        self.sock.send((cmd_dZ := f"{cmd} z {dZ}") + "\n")  # type: ignore
+        # dZ after m to mm conversion will be sent
+        self.sock.send((cmd_dZ := f"{cmd} z {1e3 * dZ}") + "\n")  # type: ignore
         LOGGER.debug(cmd_dZ)
         resp_dZ = self.sock.recv(64)
 
+        # dX and dZ after mm to m will be stored
         return Subref.from_cosmos(resp_dX, resp_dZ)
 
     def receive_state(self, *, cmd: str = "pullwte") -> "State":
@@ -141,9 +144,9 @@ class Subref:
     """Subreflector parameters of the Nobeyama 45m telescope.
 
     Args:
-        dX: Offset (in mm) from the X cylinder position
+        dX: Offset (in m) from the X cylinder position
             optimized for the gravity deformation correction.
-        dZ: Offset (in mm) from the Z cylinder positions (Z1 = Z2)
+        dZ: Offset (in m) from the Z cylinder positions (Z1 = Z2)
             optimized for the gravity deformation correction.
 
     """
@@ -160,7 +163,8 @@ class Subref:
         if (match_dZ := SUBREF_DZ_FORMAT.search(resp_dZ.decode())) is None:
             raise ValueError("Could not parse the COSMOS response of dZ.")
 
-        return cls(dX=float(match_dX[1]), dZ=float(match_dZ[1]))
+        # dX and dZ after mm to m will be stored
+        return cls(dX=1e-3 * float(match_dX[1]), dZ=1e-3 * float(match_dZ[1]))
 
 
 def get_cosmos(host: str = "127.0.0.1", port: int = 11111, /) -> Cosmos:
@@ -210,9 +214,9 @@ def send(
 
     Args:
         cmd: Command name or path to send the parameters.
-        dX: Offset (in mm) from the X cylinder position
+        dX: Offset (in m) from the X cylinder position
             optimized for the gravity deformation correction.
-        dZ: Offset (in mm) from the Z cylinder positions (Z1 = Z2)
+        dZ: Offset (in m) from the Z cylinder positions (Z1 = Z2)
             optimized for the gravity deformation correction.
         host: IP address of the COSMOS server.
         port: Port number of the COSMOS server.

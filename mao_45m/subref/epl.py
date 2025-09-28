@@ -81,7 +81,7 @@ def setup_receiver(
 def get_spectra(
     feed_origin: str,
     feed_pattern: Sequence[str],
-    freq_range: tuple[float, float], 
+    freq_range: tuple[float, float],
     freq_binning: int = 8,
     size: int = 25,
 ) -> xr.DataArray:
@@ -94,15 +94,15 @@ def get_spectra(
         size: Number of scan.
 
     """
-    
+
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     COUNT = np.zeros(5, dtype=int)
     ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)
     SPECTRA = np.zeros((5, ch), dtype=np.complex128)
-    FEED_PATTERN = feed_pattern 
-    FREQ = get_freq(freq_binning) 
-    FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])] 
-    
+    FEED_PATTERN = feed_pattern
+    FREQ = get_freq(freq_binning)
+    FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])]
+
     UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
@@ -392,5 +392,5 @@ def parse_corr_head(corr_head: list):
 # 相関データ
 def parse_corr_data(corr_data: list) -> np.ndarray:
     real = np.array(corr_data[0::2])
-    imag = np.array(corr_data[1::2]) 
+    imag = np.array(corr_data[1::2])
     return real + imag * 1j

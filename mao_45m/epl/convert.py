@@ -81,7 +81,7 @@ def get_aggregated(
     samples: xr.DataArray,
     /,
     *,
-    el: float = 0.0,
+    elevation: float = 0.0,
     feed_origin: np.datetime64 | None = None,
     feed_pattern: NDArray[np.str_] | Sequence[str] = ("",),
     freq_binning: int = 8,
@@ -91,7 +91,7 @@ def get_aggregated(
 
     Args:
         samples: VDIF samples (time x chan).
-        el: Antenna elevation angle (in deg).
+        elevation: Antenna elevation angle (in deg).
         feed_origin: Origin time for the feed name pattern.
         feed_pattern: Feed name pattern to be repeated.
         freq_binning: Number of frequency channels to bin.
@@ -105,7 +105,11 @@ def get_aggregated(
         samples.groupby(get_feed(samples, feed_pattern, feed_origin))
         .mean("time")
         .rename("aggregated")
-        .assign_coords(el=el, freq=get_freq(samples), time=samples.time[-1])
+        .assign_coords(
+            elevation=xr.DataArray(elevation, attrs={"units": "deg"}),
+            freq=get_freq(samples),
+            time=samples.time[-1],
+        )
         .swap_dims(chan="freq")
     )
     aggregated = mean(aggregated, dim={"freq": freq_binning})

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from poppy.zernike import zernike
+from typing_extensions import Self
 
 
 # constants
@@ -51,15 +52,57 @@ class Converter:
     """EPL-to-subref parameter converter for the Nobeyama 45m telescope..
 
     Args:
+        G: Homologous EPL (G; feed x elevation; in m).
+        M: Measurement matrix (M; feed x drive).
+        Z: Zernike polynomial matrix (Z; feed x drive).
         gain_dX: Propotional gain for the estimated dX.
         gain_dZ: Propotional gain for the estimated dZ.
+        range_ddX: Absolute range for ddX (in m).
+        range_ddZ: Absolute range for ddZ (in m).
         last: Last estimated subreflector parameters.
 
     """
 
+    G: xr.DataArray
+    M: xr.DataArray
+    Z: xr.DataArray
     gain_dX: float = 0.1
     gain_dZ: float = 0.1
+    range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
+    range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0)
+
+    @classmethod
+    def from_feed_model(
+        cls,
+        feed_model: PathLike[str] | str,
+        gain_dX: float = 0.1,
+        gain_dZ: float = 0.1,
+        range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
+        range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
+        last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0),
+    ) -> Self:
+        """Create an EPL-to-subref converter from given feed model.
+
+        Args:
+            feed_model: Path to the feed model CSV file.
+            gain_dX: Propotional gain for the estimated dX.
+            gain_dZ: Propotional gain for the estimated dZ.
+            range_ddX: Absolute range for ddX (in m).
+            range_ddZ: Absolute range for ddZ (in m).
+            last: Last estimated subreflector parameters.
+
+        """
+        return cls(
+            G=get_homologous_epl(feed_model),
+            M=get_measurement_matrix(feed_model),
+            Z=get_zernike_matrix(feed_model),
+            gain_dX=gain_dX,
+            gain_dZ=gain_dZ,
+            range_ddX=range_ddX,
+            range_ddZ=range_ddZ,
+            last=last,
+        )
 
     def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:  # type: ignore
         """Convert EPL to subreflector parameters.
@@ -97,18 +140,34 @@ class Converter:
         return self.last
 
 
-def get_converter(gain_dX: float = 0.1, gain_dZ: float = 0.1, /) -> Converter:
+def get_converter(
+    feed_model: PathLike[str] | str,
+    gain_dX: float = 0.1,
+    gain_dZ: float = 0.1,
+    range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
+    range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
+    /,
+) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
 
     Args:
+        feed_model: Path to the feed model CSV file.
         gain_dX: Propotional gain for the estimated dX.
         gain_dZ: Propotional gain for the estimated dZ.
+        range_ddX: Absolute range for ddX (in m).
+        range_ddZ: Absolute range for ddZ (in m).
 
     Returns:
         EPL-to-subref parameter converter.
 
     """
-    return Converter(gain_dX=gain_dX, gain_dZ=gain_dZ)
+    return Converter.from_feed_model(
+        feed_model=feed_model,
+        gain_dX=gain_dX,
+        gain_dZ=gain_dZ,
+        range_ddX=range_ddX,
+        range_ddZ=range_ddZ,
+    )
 
 
 def get_homologous_epl(
@@ -117,14 +176,14 @@ def get_homologous_epl(
     *,
     elevation_step: float = 0.01,
 ) -> xr.DataArray:
-    """Get the homologous EPL (in m; feed x elevation) from given feed model.
+    """Get the homologous EPL (G; feed x elevation; in m) from given feed model.
 
     Args:
         feed_model: Path to the feed model CSV file.
         elevation_step: Elevation step size (in deg) for calculation.
 
     Returns:
-        Homologous EPL (in m; feed x elevation).
+        Homologous EPL (G; feed x elevation; in m).
 
     """
     df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
@@ -155,7 +214,7 @@ def get_homologous_epl(
     )
 
     with xr.set_options(keep_attrs=True):
-        return a * np.cos(np.deg2rad(elevation + b)) + c
+        return (a * np.cos(np.deg2rad(elevation + b)) + c).rename("G")
 
 
 def get_inv(X: xr.DataArray, /) -> xr.DataArray:

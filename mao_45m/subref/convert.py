@@ -232,7 +232,7 @@ def get_homologous_epl(
     )
 
     with xr.set_options(keep_attrs=True):
-        return (a * np.cos(np.deg2rad(elevation + b)) + c).rename("G")
+        return (a * np.sin(np.deg2rad(elevation - b)) + c).rename("G")
 
 
 def get_inv(X: xr.DataArray, /) -> xr.DataArray:

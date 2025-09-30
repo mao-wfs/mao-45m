@@ -24,9 +24,10 @@ LOGGER = getLogger(__name__)
 
 
 def control(
+    *,
+    feed_model: str,
     feed_origin: str,
     feed_pattern: str,
-    /,
     # options for the EPL estimates
     cal_interval: int = 30,  # s
     freq_binning: int = 8,
@@ -52,7 +53,7 @@ def control(
 
     # create the EPL and subref converters
     get_epl = get_epl_converter(cal_interval)
-    get_subref = get_subref_converter(gain_dX, gain_dZ)
+    get_subref = get_subref_converter(feed_model, gain_dX, gain_dZ)
 
     with (
         tqdm(disable=not status, unit="EPL") as bar,
@@ -75,7 +76,7 @@ def control(
                     # get the aggregated data (feed x freq)
                     aggregated = get_aggregated(
                         samples,
-                        el=state.el,
+                        elevation=state.elevation,
                         feed_pattern=tuple(feed_pattern),
                         feed_origin=np.datetime64(feed_origin),
                         freq_binning=freq_binning,

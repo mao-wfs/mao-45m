@@ -10,6 +10,7 @@ __all__ = [
 
 # standard library
 from dataclasses import dataclass
+from functools import cached_property
 from logging import getLogger
 from os import PathLike
 
@@ -104,7 +105,19 @@ class Converter:
             last=last,
         )
 
-    def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:  # type: ignore
+    @cached_property
+    def inv_ZTZ_ZT(self) -> xr.DataArray:
+        """Pre-calculated (Z^T Z)^-1 Z^T (drive x feed)."""
+        Z_ = self.Z.rename(drive="drive_")
+        return get_inv(Z_ @ self.Z) @ Z_.T
+
+    @cached_property
+    def inv_ZTM_ZT(self) -> xr.DataArray:
+        """Pre-calculated (Z^T M)^-1 Z^T (drive x feed)."""
+        Z_ = self.Z.rename(drive="drive_")
+        return get_inv(Z_ @ self.M) @ Z_.T
+
+    def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:
         """Convert EPL to subreflector parameters.
 
         Args:
@@ -117,18 +130,23 @@ class Converter:
             Estimated subreflector parameters.
 
         """
-        # current = Subref(dX=..., dZ=..., m0=..., m1=...)
+        depl = (
+            epl
+            - epl_cal
+            - self.G.interp(elevation=epl.elevation)
+            + self.G.interp(elevation=epl_cal.elevation)
+        )
+        m = self.inv_ZTZ_ZT @ depl
+        d = self.inv_ZTM_ZT @ depl
 
-        # if not condition_1:
-        #     return self.on_failure()
+        current = Subref(
+            dX=-self.gain_dX * float(d.sel(drive="X")),
+            dZ=-self.gain_dZ * float(d.sel(drive="Z")),
+            m0=float(m.sel(drive="X")),
+            m1=float(m.sel(drive="Z")),
+        )
 
-        # if not condition_2:
-        #     return self.on_failure()
-
-        # if not condition_3:
-        #     return self.on_failure()
-
-        # return self.on_success(current)
+        return self.on_success(current)
 
     def on_success(self, estimated: Subref, /) -> Subref:
         """Return the estimated subreflector parameters and update the last."""

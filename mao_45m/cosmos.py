@@ -113,16 +113,16 @@ class State:
     """Current state of the Nobeyama 45m telescope.
 
     Args:
-        wind: Wind speed (in m s^-1).
+        wind_speed: Wind speed (in m s^-1).
         temp: Ambient temperature (in deg C).
-        el: Elevation angle of the telescope (in deg).
+        elevation: Elevation angle of the telescope (in deg).
         time: Timestamp of the state (timezone-aware).
 
     """
 
-    wind: float
-    temp: float
-    el: float
+    wind_speed: float
+    temperature: float
+    elevation: float
     time: datetime
 
     @classmethod
@@ -132,9 +132,9 @@ class State:
             raise ValueError("Could not parse the COSMOS response.")
 
         return cls(
-            wind=float(match[1]),
-            temp=float(match[2]),
-            el=float(match[3]),
+            wind_speed=float(match[1]),
+            temperature=float(match[2]),
+            elevation=float(match[3]),
             time=datetime.strptime(match[4], TIME_FORMAT).replace(tzinfo=TZ),
         )
 

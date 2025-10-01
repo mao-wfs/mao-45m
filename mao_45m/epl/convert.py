@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 # dependencies
 import numpy as np
+import pandas as pd
 import xarray as xr
 from ndtools import Range
 from numpy.typing import NDArray
@@ -35,15 +36,15 @@ class Converter:
     """Aggregated-to-EPL data converter for the Nobeyama 45m telescope.
 
     Args:
-        cal_interval: Bandpass calibration interval (number or timedelta).
-            If None, calibration is done only once at the beginning.
+        cal_interval: Bandpass calibration interval (float in seconds
+            or string with units). If None, calibration is done
+            only once at the beginning.
         last: Last aggregated data used for the bandpass calibration.
             It should be None when a converter is created.
 
     """
 
-    cal_interval: np.timedelta64 | int | None = None
-    count: int = field(default=0, init=False)
+    cal_interval: str | float | None = None
     last: xr.DataArray | None = None
 
     def __call__(
@@ -59,13 +60,10 @@ class Converter:
             Estimated EPL at calibration (in m; feed).
 
         """
-        if (
-            self.last is None
-            or (isinstance(n := self.cal_interval, int) and self.count >= n)
-            or (
-                isinstance(dt := self.cal_interval, np.timedelta64)
-                and aggregated.time - self.last.time >= dt
-            )
+        if self.last is None or (
+            self.cal_interval is not None
+            and aggregated.time - self.last.time
+            >= pd.to_timedelta(self.cal_interval).to_timedelta64()
         ):
             self.last = aggregated
             self.count = 0
@@ -116,12 +114,13 @@ def get_aggregated(
     return aggregated.sel(freq=aggregated.freq == freq_range)
 
 
-def get_converter(cal_interval: np.timedelta64 | int | None = None, /) -> Converter:
+def get_converter(cal_interval: str | float | None = None, /) -> Converter:
     """Get an aggregated-to-EPL data converter for the Nobeyama 45m telescope.
 
     Args:
-        cal_interval: Bandpass calibration interval (number or timedelta).
-            If None, calibration is done only once at the beginning.
+        cal_interval: Bandpass calibration interval (float in seconds
+            or string with units). If None, calibration is done
+            only once at the beginning.
 
     Returns:
         Aggregated-to-EPL data converter.

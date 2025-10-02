@@ -97,10 +97,10 @@ def get_spectra(
 
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     COUNT = np.zeros(5, dtype=int)
-    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)
+    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning) #MHz
     SPECTRA = np.zeros((5, ch), dtype=np.complex128)
     FEED_PATTERN = feed_pattern
-    FREQ = get_freq(freq_binning)
+    FREQ = get_freq(freq_binning) #Hz
     FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])]
 
     UDP_READY_EVENT.clear()
@@ -110,7 +110,7 @@ def get_spectra(
 
     for i in range(size):
         frames = scan[i]
-        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, freq_binning)
+        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, freq_range, freq_binning)
         if i == 0:
             start_time = data_time
 
@@ -311,10 +311,10 @@ def get_spectrum(
 
 
 def get_nth_spectrum_in_range(
-    scan: xr.Dataset, freq: np.ndarray, freq_binning: int = 8
+    scan: xr.Dataset, freq: np.ndarray, freq_range: tuple[float, float], freq_binning: int = 8
 ) -> tuple[datetime, np.ndarray]:
     time, spec = get_spectrum(scan, freq_binning)
-    filtered_spec = spec[(freq >= 19.5) & (freq <= 22.5)]
+    filtered_spec = spec[(freq >= freq_range[0]) & (freq <= freq_range[1])]
     return time, filtered_spec
 
 
@@ -322,7 +322,7 @@ def get_epl(spec: np.ndarray, freq: np.ndarray) -> float:
     fit = curve_fit(line_through_origin, freq, get_phase(spec))
     slope = fit[0]
     slope = slope[0]
-    epl = (C * slope * 1e-9) / (2 * np.pi)
+    epl = (C * slope) / (2 * np.pi)
     return epl
 
 

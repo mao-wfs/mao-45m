@@ -73,38 +73,6 @@ class Converter:
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0)
 
-    @classmethod
-    def from_feed_model(
-        cls,
-        feed_model: PathLike[str] | str,
-        gain_dX: float = 0.1,
-        gain_dZ: float = 0.1,
-        range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
-        range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-        last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0),
-    ) -> Self:
-        """Create an EPL-to-subref converter from given feed model.
-
-        Args:
-            feed_model: Path to the feed model CSV file.
-            gain_dX: Propotional gain for the estimated dX.
-            gain_dZ: Propotional gain for the estimated dZ.
-            range_ddX: Absolute range for ddX (in m).
-            range_ddZ: Absolute range for ddZ (in m).
-            last: Last estimated subreflector parameters.
-
-        """
-        return cls(
-            G=get_homologous_epl(feed_model),
-            M=get_measurement_matrix(feed_model),
-            Z=get_zernike_matrix(feed_model),
-            gain_dX=gain_dX,
-            gain_dZ=gain_dZ,
-            range_ddX=range_ddX,
-            range_ddZ=range_ddZ,
-            last=last,
-        )
-
     @cached_property
     def inv_ZTZ_ZT(self) -> xr.DataArray:
         """Pre-calculated (Z^T Z)^-1 Z^T (drive x feed)."""
@@ -179,8 +147,10 @@ def get_converter(
         EPL-to-subref parameter converter.
 
     """
-    return Converter.from_feed_model(
-        feed_model=feed_model,
+    return Converter(
+        G=get_homologous_epl(feed_model),
+        M=get_measurement_matrix(feed_model),
+        Z=get_zernike_matrix(feed_model),
         gain_dX=gain_dX,
         gain_dZ=gain_dZ,
         range_ddX=range_ddX,

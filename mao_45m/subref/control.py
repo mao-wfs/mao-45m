@@ -16,11 +16,12 @@ from ..epl.convert import get_aggregated, get_converter as get_epl_converter
 from ..vdif import FRAMES_PER_SAMPLE
 from ..vdif.receive import get_frames
 from ..vdif.convert import get_samples
-from ..utils import take
+from ..utils import take, to_timedelta
 
 
 # constants
 LOGGER = getLogger(__name__)
+SECOND = np.timedelta64(1, "s")
 
 
 def control(
@@ -29,12 +30,10 @@ def control(
     feed_origin: str,
     feed_pattern: str,
     # options for the EPL estimates
-    cal_interval: int = 30,  # s
+    cal_interval: str | float = "10 s",
     freq_binning: int = 8,
-    freq_min: float = 19.5e9,  # Hz
-    freq_max: float = 22.5e9,  # Hz
-    integ_per_sample: float = 0.01,  # s
-    integ_per_epl: float = 0.5,  # s
+    integ_per_sample: str | float = "0.01 s",
+    integ_per_epl: str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = False,
     gain_dX: float = 0.1,
@@ -49,7 +48,9 @@ def control(
 ) -> None:
     """Control the subreflector of the Nobeyama 45m telescope by MAO."""
     # define the frame size for each EPL estimate
-    frame_size = FRAMES_PER_SAMPLE * int(integ_per_epl / integ_per_sample)
+    dt_epl = to_timedelta(integ_per_epl)
+    dt_sample = to_timedelta(integ_per_sample)
+    frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
     # create the EPL and subref converters
     get_epl = get_epl_converter(cal_interval)
@@ -62,11 +63,11 @@ def control(
     ):
         # wait until enough frames are buffered
         while len(frames.get(frame_size)) != frame_size:
-            sleep(integ_per_epl)
+            sleep(dt_epl / SECOND)
 
         try:
             while True:
-                with take(integ_per_epl):
+                with take(dt_epl / SECOND):
                     # get the current telescope state
                     state = cosmos.receive_state()
 

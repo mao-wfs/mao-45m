@@ -11,17 +11,16 @@ __all__ = [
 
 # standard library
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # dependencies
 import numpy as np
-import pandas as pd
 import xarray as xr
 from ndtools import Range
 from numpy.typing import NDArray
 from decode.stats import mean
-from ..cosmos import Cosmos
+from ..utils import to_datetime, to_timedelta
 
 
 # constants
@@ -62,8 +61,7 @@ class Converter:
         """
         if self.last is None or (
             self.cal_interval is not None
-            and aggregated.time - self.last.time
-            >= pd.to_timedelta(self.cal_interval).to_timedelta64()
+            and aggregated.time - self.last.time > to_timedelta(self.cal_interval)
         ):
             self.last = aggregated
             self.count = 0
@@ -80,8 +78,8 @@ def get_aggregated(
     /,
     *,
     elevation: float = 0.0,
-    feed_origin: np.datetime64 | None = None,
-    feed_pattern: NDArray[np.str_] | Sequence[str] = ("",),
+    feed_origin: np.datetime64 | str | None = None,
+    feed_pattern: Sequence[str] = ("",),
     freq_binning: int = 8,
     freq_range: Range = Range(19.5e9, 22.5e9),
 ) -> xr.DataArray:
@@ -144,8 +142,8 @@ def get_epl(aggregated: xr.DataArray, /) -> xr.DataArray:
 
 def get_feed(
     samples: xr.DataArray,
-    pattern: NDArray[np.str_] | Sequence[str] = ("",),
-    origin: np.datetime64 | None = None,
+    pattern: Sequence[str] = ("",),
+    origin: np.datetime64 | str | None = None,
     /,
 ) -> xr.DataArray:
     """Get the feed names from the VDIF samples.
@@ -162,7 +160,7 @@ def get_feed(
     if origin is None:
         origin = samples.time[0]
     else:
-        origin = np.datetime64(origin)
+        origin = to_datetime(origin)
 
     dt = np.timedelta64(samples.ip_length, "ms")
     index = ((samples.time - origin) / dt).astype(int)

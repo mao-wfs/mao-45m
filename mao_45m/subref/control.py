@@ -2,7 +2,9 @@ __all__ = ["control"]
 
 
 # standard library
+from collections.abc import Sequence
 from logging import getLogger
+from os import PathLike
 from time import sleep
 
 
@@ -26,18 +28,22 @@ SECOND = np.timedelta64(1, "s")
 
 def control(
     *,
-    feed_model: str,
+    # options for the feed information
+    feed_model: PathLike[str] | str,
     feed_origin: str,
-    feed_pattern: str,
+    feed_pattern: Sequence[str] | str,
     # options for the EPL estimates
     cal_interval: str | float = "10 s",
     freq_binning: int = 8,
+    freq_range: tuple[float, float] = (19.5e9, 22.5e9),  # Hz
     integ_per_sample: str | float = "0.01 s",
     integ_per_epl: str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = False,
     gain_dX: float = 0.1,
     gain_dZ: float = 0.1,
+    range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
+    range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
     # options for network connection
     cosmos_host: str = "127.0.0.1",
     cosmos_port: int = 11111,
@@ -54,7 +60,13 @@ def control(
 
     # create the EPL and subref converters
     get_epl = get_epl_converter(cal_interval)
-    get_subref = get_subref_converter(feed_model, gain_dX, gain_dZ)
+    get_subref = get_subref_converter(
+        feed_model,
+        gain_dX,
+        gain_dZ,
+        range_ddX,
+        range_ddZ,
+    )
 
     with (
         tqdm(disable=not status, unit="EPL") as bar,
@@ -81,7 +93,7 @@ def control(
                         feed_pattern=tuple(feed_pattern),
                         feed_origin=np.datetime64(feed_origin),
                         freq_binning=freq_binning,
-                        freq_range=Range(freq_min, freq_max),
+                        freq_range=Range(*freq_range),
                     )
 
                     # estimate the EPL (in m; feed)

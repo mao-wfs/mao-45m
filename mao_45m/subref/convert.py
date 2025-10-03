@@ -24,8 +24,8 @@ from typing_extensions import Self
 # constants
 LOGGER = getLogger(__name__)
 NRO45M_DIAMETER = 45.0  # m
-SOFTWARE_LIMIT_DZ = 0.049  # m
-SOFTWARE_LIMIT_DX = 0.118  # m
+ACCEPTABLE_ABSMAX_DX = 0.118  # m
+ACCEPTABLE_ABSMAX_DZ = 0.049  # m
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,9 @@ class Subref:
             optimized for the gravity deformation correction.
         dZ: Estimated offset (in m) from the Z cylinder positions (Z1 = Z2)
             optimized for the gravity deformation correction.
-        m0: 展開係数のX軸方向成分.
-        m1: 展開係数のZ軸方向成分.
-        time: EPL推定の最終時刻.
+        m0: Expansion coefficient in the X direction.
+        m1: Expansion coefficient in the Z direction.
+        time: Timestamp of the estimated EPL.
 
     """
 
@@ -63,8 +63,8 @@ class Converter:
         integral_gain_dZ: Integral gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        Tc: Time constant (in s).
-        time_threshold: 現在と直前ループのEPL推定最終時刻の時刻差判定で使用する閾値.
+        Tc: Control period (in s).
+        Tc_tolerance: Tolerance of the control period (in s).
         last: Last estimated subreflector parameters.
 
     """
@@ -78,7 +78,7 @@ class Converter:
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     Tc: float = 0.250  # s
-    time_threshold: float = 0.5  # s (適当)
+    Tc_tolerance: float = 0.100  # s
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0, time=None)
 
     @cached_property
@@ -102,8 +102,8 @@ class Converter:
         """
         if (self.last.time != None) and (epl.time - self.last.time) / np.timedelta64(
             1, "s"
-        ) >= self.time_threshold:
-            LOGGER.warning(f"Time difference exceeds threshold.")
+        ) >= self.Tc + self.Tc_tolerance:
+            LOGGER.warning(f"Control period exceeded the tolerance.")
             return self.on_failure(epl)  # 異常発生時のEPL時刻
 
         depl = (
@@ -127,10 +127,10 @@ class Converter:
         )
 
         if not (
-            -SOFTWARE_LIMIT_DX < current.dX < SOFTWARE_LIMIT_DX
-            or -SOFTWARE_LIMIT_DZ < current.dZ < SOFTWARE_LIMIT_DZ
+            -ACCEPTABLE_ABSMAX_DX < current.dX < ACCEPTABLE_ABSMAX_DX
+            and -ACCEPTABLE_ABSMAX_DZ < current.dZ < ACCEPTABLE_ABSMAX_DZ
         ):
-            LOGGER.warning(f"Software limit reached.")
+            LOGGER.warning(f"Estimated subreflector parameters are out of range.")
             return self.on_failure(epl)
 
         if not (
@@ -170,8 +170,8 @@ def get_converter(
     integral_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-    Tc: float = 0.5,  # s
-    time_threshold: float = 0.5,  # s (適当)
+    Tc: float = 0.250,  # s
+    Tc_tolerance: float = 0.100,  # s
     /,
 ) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
@@ -184,8 +184,8 @@ def get_converter(
         integral_gain_dZ: Integral gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        Tc: Time constant (in s).
-        time_threshold: 現在と直前ループのEPL推定最終時刻の時刻差判定で使用する閾値.
+        Tc: Control period (in s).
+        Tc_tolerance: Tolerance of the control period (in s).
 
     Returns:
         EPL-to-subref parameter converter.
@@ -201,7 +201,7 @@ def get_converter(
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
         Tc=Tc,
-        time_threshold=time_threshold,
+        Tc_tolerance=Tc_tolerance,
     )
 
 

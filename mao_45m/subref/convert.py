@@ -64,7 +64,7 @@ class Converter:
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         Tc: Control period (in s).
-        Tc_tolerance: Tolerance of the control period (in s).
+        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
         last: Last estimated subreflector parameters.
 
     """
@@ -78,7 +78,7 @@ class Converter:
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     Tc: float = 0.250  # s
-    Tc_tolerance: float = 0.100  # s
+    Tc_tolerance: float = 0.1  # s
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0, time=None)
 
     @cached_property
@@ -100,9 +100,13 @@ class Converter:
             Estimated subreflector parameters.
 
         """
-        if (self.last.time != None) and (epl.time - self.last.time) / np.timedelta64(
-            1, "s"
-        ) >= self.Tc + self.Tc_tolerance:
+        if (self.last.time != None) and (
+            not (
+                self.Tc * (1 - self.Tc_tolerance)
+                < (epl.time - self.last.time) / np.timedelta64(1, "s")
+                < self.Tc * (1 + self.Tc_tolerance)
+            )
+        ):
             LOGGER.warning(f"Control period exceeded the tolerance.")
             return self.on_failure(epl)  # 異常発生時のEPL時刻
 
@@ -171,7 +175,7 @@ def get_converter(
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
     Tc: float = 0.250,  # s
-    Tc_tolerance: float = 0.100,  # s
+    Tc_tolerance: float = 0.1,  # s
     /,
 ) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
@@ -185,7 +189,7 @@ def get_converter(
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         Tc: Control period (in s).
-        Tc_tolerance: Tolerance of the control period (in s).
+        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
 
     Returns:
         EPL-to-subref parameter converter.

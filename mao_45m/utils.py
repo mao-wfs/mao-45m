@@ -1,10 +1,12 @@
-__all__ = ["sleep", "take", "to_datetime", "to_timedelta"]
+__all__ = ["log", "sleep", "take", "to_datetime", "to_timedelta"]
 
 
 # standard library
 from collections.abc import Iterator
 from contextlib import contextmanager
-from logging import getLogger
+from datetime import datetime, timezone
+from logging import FileHandler, Formatter, LogRecord, StreamHandler, getLogger
+from os import PathLike
 from time import perf_counter, sleep as sleep_
 
 
@@ -16,6 +18,65 @@ from dateparser import parse
 
 # constants
 LOGGER = getLogger(__name__)
+LOGGER_FORMAT = "{asctime} | {funcName} | {levelname} | {message}"
+
+
+class ISO8601Formatter(Formatter):
+    """Formatter whose default time format is ISO 8601."""
+
+    def formatTime(self, record: LogRecord, datefmt: str | None = None) -> str:
+        return datetime.fromtimestamp(record.created, timezone.utc).isoformat()
+
+
+@contextmanager
+def log(
+    *,
+    file: PathLike[str] | str | None = None,
+    file_level: int | str = "DEBUG",
+    stderr: bool = True,
+    stderr_level: int | str = "INFO",
+) -> Iterator[None]:
+    """Context manager for the root logger configuration.
+
+    Args:
+        file: Path to the log file.
+        file_level: Logging level for the log file.
+        stderr: Whether to log to stderr.
+        stderr_level: Logging level for stderr.
+
+    """
+    root = getLogger()
+    current_level = root.level
+    current_handlers = root.handlers.copy()
+    formatter = ISO8601Formatter(LOGGER_FORMAT, style="{")
+
+    try:
+        root.setLevel("DEBUG")
+
+        for handler in root.handlers:
+            root.removeHandler(handler)
+
+        if file is not None:
+            handler = FileHandler(file)
+            handler.setFormatter(formatter)
+            handler.setLevel(file_level)
+            root.addHandler(handler)
+
+        if stderr:
+            handler = StreamHandler()
+            handler.setFormatter(formatter)
+            handler.setLevel(stderr_level)
+            root.addHandler(handler)
+
+        yield
+    finally:
+        root.setLevel(current_level)
+
+        for handler in root.handlers:
+            root.removeHandler(handler)
+
+        for handler in current_handlers:
+            root.addHandler(handler)
 
 
 def sleep(seconds: float, /) -> None:

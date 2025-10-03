@@ -15,6 +15,8 @@ from typing_extensions import Self
 
 
 # constants
+ABSMAX_DX = 0.118  # m
+ABSMAX_DZ = 0.049  # m
 LOGGER = getLogger(__name__)
 STATE_FORMAT = re.compile(
     r"wind:\s+([0-9.+-]+)\s+"
@@ -34,6 +36,8 @@ class Cosmos:
     Args:
         host: IP address of the COSMOS server.
         port: Port number of the COSMOS server.
+        safe: Whether to raise an error before sending
+            if the subreflector parameters are out of range.
 
     Example:
         ::
@@ -46,8 +50,15 @@ class Cosmos:
 
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 11111) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 11111,
+        safe: bool = True,
+    ) -> None:
         self.sock = get_socket(host=host, port=port)
+        self.safe = safe
 
     def send_subref(
         self,
@@ -69,6 +80,19 @@ class Cosmos:
             Current subreflector parameters received from COSMOS.
 
         """
+        # check if dX and dZ are within the acceptable ranges
+        if abs(dX) > ABSMAX_DX:
+            if self.safe:
+                raise ValueError(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
+            else:
+                LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
+
+        if abs(dZ) > ABSMAX_DZ:
+            if self.safe:
+                raise ValueError(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
+            else:
+                LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
+
         # dX after m to mm conversion will be sent
         self.sock.send((cmd_dX := f"{cmd} x {1e3 * dX}") + "\n")  # type: ignore
         LOGGER.debug(cmd_dX)
@@ -167,18 +191,25 @@ class Subref:
         return cls(dX=1e-3 * float(match_dX[1]), dZ=1e-3 * float(match_dZ[1]))
 
 
-def get_cosmos(host: str = "127.0.0.1", port: int = 11111, /) -> Cosmos:
+def get_cosmos(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 11111,
+    safe: bool = True,
+) -> Cosmos:
     """Get a COSMOS client for the Nobeyama 45m telescope.
 
     Args:
         host: IP address of the COSMOS server.
         port: Port number of the COSMOS server.
+        safe: Whether to raise an error before sending
+            if the subreflector parameters are out of range.
 
     Returns:
         COSMOS client for the Nobeyama 45m telescope.
 
     """
-    return Cosmos(host=host, port=port)
+    return Cosmos(host=host, port=port, safe=safe)
 
 
 def receive(
@@ -209,6 +240,7 @@ def send(
     dZ: float,
     host: str = "127.0.0.1",
     port: int = 11111,
+    safe: bool = True,
 ) -> Subref:
     """Send the subreflector parameters of the Nobeyama 45m telescope.
 
@@ -220,12 +252,14 @@ def send(
             optimized for the gravity deformation correction.
         host: IP address of the COSMOS server.
         port: Port number of the COSMOS server.
+        safe: Whether to raise an error before sending
+            if the subreflector parameters are out of range.
 
     Returns:
         Current subreflector parameters received from COSMOS.
 
     """
-    with Cosmos(host=host, port=port) as cosmos:
+    with Cosmos(host=host, port=port, safe=safe) as cosmos:
         return cosmos.send_subref(cmd=cmd, dX=dX, dZ=dZ)
 
 

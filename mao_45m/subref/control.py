@@ -47,6 +47,7 @@ def control(
     # options for network connection
     cosmos_host: str = "127.0.0.1",
     cosmos_port: int = 11111,
+    cosmos_safe: bool = True,
     vdif_group: str = "239.0.0.1",
     vdif_port: int = 22222,
     # option for display and logging
@@ -70,7 +71,7 @@ def control(
 
     with (
         tqdm(disable=not status, unit="EPL") as bar,
-        get_cosmos(cosmos_host, cosmos_port) as cosmos,
+        get_cosmos(host=cosmos_host, port=cosmos_port, safe=cosmos_safe) as cosmos,
         get_frames(frame_size * 2, group=vdif_group, port=vdif_port) as frames,
     ):
         # wait until enough frames are buffered

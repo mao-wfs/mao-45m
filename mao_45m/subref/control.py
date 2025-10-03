@@ -16,8 +16,8 @@ from .convert import get_converter as get_subref_converter
 from ..cosmos import get_cosmos
 from ..epl.convert import get_aggregated, get_converter as get_epl_converter
 from ..vdif import FRAMES_PER_SAMPLE
-from ..vdif.receive import get_frames
 from ..vdif.convert import get_samples
+from ..vdif.receive import get_frames
 from ..utils import take, to_timedelta
 
 
@@ -90,8 +90,8 @@ def control(
                     aggregated = get_aggregated(
                         samples,
                         elevation=state.elevation,
-                        feed_pattern=tuple(feed_pattern),
-                        feed_origin=np.datetime64(feed_origin),
+                        feed_pattern=feed_pattern,
+                        feed_origin=feed_origin,
                         freq_binning=freq_binning,
                         freq_range=Range(*freq_range),
                     )

@@ -47,7 +47,7 @@ class Subref:
     dZ: float
     m0: float
     m1: float
-    time: np.datetime64
+    time: np.datetime64 | None
 
 
 @dataclass
@@ -104,7 +104,7 @@ class Converter:
             1, "s"
         ) >= self.time_threshold:
             LOGGER.warning(f"Time difference exceeds threshold.")
-            return self.on_failure()  # 異常発生時のEPL時刻
+            return self.on_failure(epl)  # 異常発生時のEPL時刻
 
         depl = (
             epl
@@ -131,17 +131,17 @@ class Converter:
             or -SOFTWARE_LIMIT_DZ < current.dZ < SOFTWARE_LIMIT_DZ
         ):
             LOGGER.warning(f"Software limit reached.")
-            return self.on_failure()
+            return self.on_failure(epl)
 
         if not (
             self.range_ddX[0] < np.abs(current.dX - self.last.dX) < self.range_ddX[1]
         ):
-            return self.on_failure()
+            return self.on_failure(epl)
 
         if not (
             self.range_ddZ[0] < np.abs(current.dZ - self.last.dZ) < self.range_ddZ[1]
         ):
-            return self.on_failure()
+            return self.on_failure(epl)
 
         return self.on_success(current)
 
@@ -150,7 +150,7 @@ class Converter:
         self.last = estimated
         return estimated
 
-    def on_failure(self) -> Subref:
+    def on_failure(self, epl) -> Subref:
         """Return the last subreflector parameters without updating."""
         self.last = Subref(
             dX=self.last.dX,

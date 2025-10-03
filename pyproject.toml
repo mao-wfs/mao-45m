@@ -5,6 +5,7 @@ description = "MAO controller for the Nobeyama 45m telescope"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+    "dateparser>=1,<2",
     "decode>=2025.6,<2026.0",
     "fire>=0.7,<1.0",
     "matplotlib>=3,<4",

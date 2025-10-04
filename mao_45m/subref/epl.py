@@ -42,38 +42,25 @@ UINT: str = "I"
 
 
 # global variables
-COUNT = np.zeros(5, dtype=int)
 FEED = ["c", "t", "r", "b", "l"]
-FEED_PATTERN = tuple("ccccxttttxrrrrxbbbbxllllx")
-FREQ = np.array([])
-FREQ_SELECTED = np.array([])
-SPECTRA = np.zeros((5, 375), dtype=np.complex128)
 UDP_READY_EVENT = Event()
 
 
 @contextmanager
 def setup_receiver(
     *,
-    feed_pattern: Sequence[str],
-    freq_binning: int = 8,
     group: str = "239.0.0.1",
     port: int = 11111,
 ) -> Iterator[None]:
     """Setup the UDP receiver for EPL calculation.
 
     Args:
-        feed_pattern: Feed name pattern to be repeated.
-        freq_binning: Number of frequency channels to bin.
         group: Multicast group address.
         port: Multicast port number.
 
     """
-    global FEED_PATTERN, FREQ, FREQ_SELECTED
 
     sock = get_socket(group=group, port=port)
-    FEED_PATTERN = feed_pattern
-    FREQ = get_freq(freq_binning)
-    FREQ_SELECTED = FREQ[(FREQ >= 19.5) & (FREQ <= 22.5)]
 
     receiver_thread = Thread(
         target=udp_receiver,
@@ -93,12 +80,29 @@ def setup_receiver(
 
 def get_spectra(
     feed_origin: str,
+    feed_pattern: Sequence[str],
+    freq_range: tuple[float, float],
     freq_binning: int = 8,
     size: int = 25,
 ) -> xr.DataArray:
+    """Get Spectra.
+
+    Args:
+        feed_pattern: Feed name pattern to be repeated.
+        freq_range: Frequency range to select (in Hz).
+        freq_binning: Number of frequency channels to bin.
+        size: Number of scan.
+
+    """
+
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     COUNT = np.zeros(5, dtype=int)
-    SPECTRA = np.zeros((5, 375), dtype=np.complex128)
+    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)  # MHz
+    SPECTRA = np.zeros((5, ch), dtype=np.complex128)
+    FEED_PATTERN = feed_pattern
+    FREQ = get_freq(freq_binning)  # Hz
+    FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])]
+
     UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
@@ -106,7 +110,9 @@ def get_spectra(
 
     for i in range(size):
         frames = scan[i]
-        data_time, spectrum = get_nth_spectrum_in_range(frames, FREQ, freq_binning)
+        data_time, spectrum = get_nth_spectrum_in_range(
+            frames, FREQ, freq_range, freq_binning
+        )
         if i == 0:
             start_time = data_time
 
@@ -307,10 +313,13 @@ def get_spectrum(
 
 
 def get_nth_spectrum_in_range(
-    scan: xr.Dataset, freq: np.ndarray, freq_binning: int = 8
+    scan: xr.Dataset,
+    freq: np.ndarray,
+    freq_range: tuple[float, float],
+    freq_binning: int = 8,
 ) -> tuple[datetime, np.ndarray]:
     time, spec = get_spectrum(scan, freq_binning)
-    filtered_spec = spec[(freq >= 19.5) & (freq <= 22.5)]
+    filtered_spec = spec[(freq >= freq_range[0]) & (freq <= freq_range[1])]
     return time, filtered_spec
 
 
@@ -318,12 +327,12 @@ def get_epl(spec: np.ndarray, freq: np.ndarray) -> float:
     fit = curve_fit(line_through_origin, freq, get_phase(spec))
     slope = fit[0]
     slope = slope[0]
-    epl = (C * slope * 1e-9) / (2 * np.pi)
+    epl = (C * slope) / (2 * np.pi)
     return epl
 
 
 def get_freq(bin_width: int = 8, n_chans: int = 2048) -> np.ndarray:
-    freq = 1e-3 * (LOWER_FREQ_MHZ + np.arange(n_chans * bin_width))
+    freq = 1e6 * (LOWER_FREQ_MHZ + np.arange(n_chans * bin_width))
     freq = freq.reshape((freq.shape[0] // bin_width, bin_width)).mean(-1)
     return freq
 
@@ -334,7 +343,6 @@ def get_n_from_current_time(start_time: datetime, data_time: datetime) -> int:
     return n
 
 
-# 振幅
 def get_amp(da: np.ndarray) -> np.ndarray:
     """複素数DataArrayの絶対値Amplitudeを返す関数"""
     amp = np.abs(da)
@@ -362,7 +370,6 @@ def make_binary_reader(n_rows: int, dtype: str) -> Callable:
     struct = Struct(LITTLE_ENDIAN + dtype * n_rows)
 
     def reader(f):
-        # fがbytesならそのまま、ファイルオブジェクトならread
         if isinstance(f, bytes):
             return struct.unpack(f)
         else:
@@ -378,7 +385,7 @@ read_corr_data: Callable = make_binary_reader(N_ROWS_CORR_DATA, SHORT)
 
 # struct parsers
 def parse_vdif_head(vdif_head: list):
-    # not implemented yet ここにvdifヘッダの解析処理を実装する
+    # not implemented yet
     pass
 
 
@@ -389,6 +396,6 @@ def parse_corr_head(corr_head: list):
 
 # 相関データ
 def parse_corr_data(corr_data: list) -> np.ndarray:
-    real = np.array(corr_data[0::2])  # 偶数の要素を実部
-    imag = np.array(corr_data[1::2])  # 奇数の要素を虚部
+    real = np.array(corr_data[0::2])
+    imag = np.array(corr_data[1::2])
     return real + imag * 1j

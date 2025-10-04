@@ -94,13 +94,15 @@ class Cosmos:
                 LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
 
         # dX after m to mm conversion will be sent
-        self.sock.send((cmd_dX := f"{cmd} x {1e3 * dX}") + "\n")  # type: ignore
+        cmd_dX = f"{cmd} x {1e3 * dX}"
         LOGGER.debug(cmd_dX)
+        self.sock.send((cmd_dX + "\n").encode())
         resp_dX = self.sock.recv(64)
 
         # dZ after m to mm conversion will be sent
-        self.sock.send((cmd_dZ := f"{cmd} z {1e3 * dZ}") + "\n")  # type: ignore
+        cmd_dZ = f"{cmd} z {1e3 * dZ}"
         LOGGER.debug(cmd_dZ)
+        self.sock.send((cmd_dZ + "\n").encode())
         resp_dZ = self.sock.recv(64)
 
         # dX and dZ after mm to m will be stored
@@ -117,8 +119,8 @@ class Cosmos:
 
         """
 
-        self.sock.send(cmd + "\n")  # type: ignore
         LOGGER.debug(cmd)
+        self.sock.send((cmd + "\n").encode())
         resp = self.sock.recv(64)
 
         return State.from_cosmos(resp)

@@ -24,8 +24,8 @@ from typing_extensions import Self
 # constants
 LOGGER = getLogger(__name__)
 NRO45M_DIAMETER = 45.0  # m
-PROHIBITED_ABSMAX_DX = 0.118  # m
-PROHIBITED_ABSMAX_DZ = 0.049  # m
+ACCEPTABLE_ABSMAX_DX = 0.048  # m
+ACCEPTABLE_ABSMAX_DZ = 0.024  # m
 
 
 @dataclass(frozen=True)
@@ -141,8 +141,8 @@ class Converter:
             return self.on_failure(epl)
 
         if not (
-            abs(current.dX) <= PROHIBITED_ABSMAX_DX
-            and abs(current.dZ) <= PROHIBITED_ABSMAX_DZ
+            abs(current.dX) < ACCEPTABLE_ABSMAX_DX
+            and abs(current.dZ) < ACCEPTABLE_ABSMAX_DZ
         ):
             LOGGER.warning(f"Estimated subreflector parameters are out of range.")
             return self.on_failure(epl)

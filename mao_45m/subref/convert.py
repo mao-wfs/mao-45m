@@ -24,8 +24,8 @@ from typing_extensions import Self
 # constants
 LOGGER = getLogger(__name__)
 NRO45M_DIAMETER = 45.0  # m
-ACCEPTABLE_ABSMAX_DX = 0.118  # m
-ACCEPTABLE_ABSMAX_DZ = 0.049  # m
+PROHIBITED_ABSMAX_DX = 0.118  # m
+PROHIBITED_ABSMAX_DZ = 0.049  # m
 
 
 @dataclass(frozen=True)
@@ -103,8 +103,8 @@ class Converter:
         if (self.last.time != None) and (
             not (
                 self.Tc * (1 - self.Tc_tolerance)
-                < (epl.time - self.last.time) / np.timedelta64(1, "s")
-                < self.Tc * (1 + self.Tc_tolerance)
+                <= (epl.time - self.last.time) / np.timedelta64(1, "s")
+                <= self.Tc * (1 + self.Tc_tolerance)
             )
         ):
             LOGGER.warning(f"Control period exceeded the tolerance.")
@@ -131,13 +131,6 @@ class Converter:
         )
 
         if not (
-            -ACCEPTABLE_ABSMAX_DX < current.dX < ACCEPTABLE_ABSMAX_DX
-            and -ACCEPTABLE_ABSMAX_DZ < current.dZ < ACCEPTABLE_ABSMAX_DZ
-        ):
-            LOGGER.warning(f"Estimated subreflector parameters are out of range.")
-            return self.on_failure(epl)
-
-        if not (
             self.range_ddX[0] < np.abs(current.dX - self.last.dX) < self.range_ddX[1]
         ):
             return self.on_failure(epl)
@@ -145,6 +138,13 @@ class Converter:
         if not (
             self.range_ddZ[0] < np.abs(current.dZ - self.last.dZ) < self.range_ddZ[1]
         ):
+            return self.on_failure(epl)
+
+        if not (
+            abs(current.dX) <= PROHIBITED_ABSMAX_DX
+            and abs(current.dZ) <= PROHIBITED_ABSMAX_DZ
+        ):
+            LOGGER.warning(f"Estimated subreflector parameters are out of range.")
             return self.on_failure(epl)
 
         return self.on_success(current)

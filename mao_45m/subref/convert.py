@@ -18,7 +18,6 @@ from os import PathLike
 import numpy as np
 import pandas as pd
 import xarray as xr
-from typing_extensions import Self
 
 
 # constants
@@ -64,7 +63,8 @@ class Converter:
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         Tc: Control period (in s).
-        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
+        Tc_tolerance: Acceptable fraction of EPL time interval
+            relative to Tc (0.1 means +/- 10% allowance).
         last: Last estimated subreflector parameters.
 
     """
@@ -117,32 +117,34 @@ class Converter:
             + self.G.interp(elevation=epl_cal.elevation)
         )
         m = self.inv_MTM_MT @ depl
+        m0 = float(m.sel(drive="X"))
+        m1 = float(m.sel(drive="Z"))
 
         current = Subref(
             dX=self.last.dX
-            - self.integral_gain_dX * self.Tc * float(m.sel(drive="X"))
-            - self.proportional_gain_dX * (float(m.sel(drive="X")) - self.last.m0),
+            - self.integral_gain_dX * self.Tc * m0
+            - self.proportional_gain_dX * (m0 - self.last.m0),
             dZ=self.last.dZ
-            - self.integral_gain_dZ * self.Tc * float(m.sel(drive="Z"))
-            - self.proportional_gain_dZ * (float(m.sel(drive="Z")) - self.last.m1),
-            m0=float(m.sel(drive="X")),
-            m1=float(m.sel(drive="Z")),
-            time=epl.time.values,  # epl.timeがnp.datetime64 (UTC)だと仮定
+            - self.integral_gain_dZ * self.Tc * m1
+            - self.proportional_gain_dZ * (m1 - self.last.m1),
+            m0=m0,
+            m1=m1,
+            time=epl.time.values,
         )
 
         if not (
-            self.range_ddX[0] < np.abs(current.dX - self.last.dX) < self.range_ddX[1]
+            self.range_ddX[0] <= abs(current.dX - self.last.dX) <= self.range_ddX[1]
         ):
             return self.on_failure(epl)
 
         if not (
-            self.range_ddZ[0] < np.abs(current.dZ - self.last.dZ) < self.range_ddZ[1]
+            self.range_ddZ[0] <= abs(current.dZ - self.last.dZ) <= self.range_ddZ[1]
         ):
             return self.on_failure(epl)
 
         if not (
-            abs(current.dX) < ACCEPTABLE_ABSMAX_DX
-            and abs(current.dZ) < ACCEPTABLE_ABSMAX_DZ
+            abs(current.dX) <= ACCEPTABLE_ABSMAX_DX
+            and abs(current.dZ) <= ACCEPTABLE_ABSMAX_DZ
         ):
             LOGGER.warning(f"Estimated subreflector parameters are out of range.")
             return self.on_failure(epl)
@@ -154,7 +156,7 @@ class Converter:
         self.last = estimated
         return estimated
 
-    def on_failure(self, epl) -> Subref:
+    def on_failure(self, epl: xr.DataArray, /) -> Subref:
         """Return the last subreflector parameters without updating."""
         self.last = Subref(
             dX=self.last.dX,
@@ -167,6 +169,7 @@ class Converter:
 
 
 def get_converter(
+    *,
     feed_model: PathLike[str] | str,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
@@ -175,8 +178,7 @@ def get_converter(
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
     Tc: float = 0.250,  # s
-    Tc_tolerance: float = 0.1,  # s
-    /,
+    Tc_tolerance: float = 0.1,
 ) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
 
@@ -189,7 +191,8 @@ def get_converter(
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         Tc: Control period (in s).
-        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
+        Tc_tolerance: Acceptable fraction of EPL time interval
+            relative to Tc (0.1 means +/- 10% allowance).
 
     Returns:
         EPL-to-subref parameter converter.

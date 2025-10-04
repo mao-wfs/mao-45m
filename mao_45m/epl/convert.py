@@ -43,7 +43,7 @@ class Converter:
 
     """
 
-    cal_interval: str | float | None = None
+    cal_interval: np.timedelta64 | str | float | None = None
     last: xr.DataArray | None = None
 
     def __call__(
@@ -112,7 +112,10 @@ def get_aggregated(
     return aggregated.sel(freq=aggregated.freq == freq_range)
 
 
-def get_converter(cal_interval: str | float | None = None, /) -> Converter:
+def get_converter(
+    cal_interval: np.timedelta64 | str | float | None = None,
+    /,
+) -> Converter:
     """Get an aggregated-to-EPL data converter for the Nobeyama 45m telescope.
 
     Args:

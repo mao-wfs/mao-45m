@@ -39,7 +39,7 @@ def control(
     integ_per_sample: np.timedelta64 | str | float = "0.01 s",
     integ_per_epl: np.timedelta64 | str | float = "0.5 s",
     # options for the subref control
-    dry_run: bool = False,
+    dry_run: bool = True,
     integral_gain_dX: float = 0.1,
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,

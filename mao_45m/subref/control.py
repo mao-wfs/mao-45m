@@ -33,17 +33,21 @@ def control(
     feed_origin: str,
     feed_pattern: Sequence[str] | str,
     # options for the EPL estimates
-    cal_interval: str | float = "10 s",
+    cal_interval: np.timedelta64 | str | float = "10 s",
     freq_binning: int = 8,
     freq_range: tuple[float, float] = (19.5e9, 22.5e9),  # Hz
-    integ_per_sample: str | float = "0.01 s",
-    integ_per_epl: str | float = "0.5 s",
+    integ_per_sample: np.timedelta64 | str | float = "0.01 s",
+    integ_per_epl: np.timedelta64 | str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = False,
-    gain_dX: float = 0.1,
-    gain_dZ: float = 0.1,
+    integral_gain_dX: float = 0.1,
+    integral_gain_dZ: float = 0.1,
+    proportional_gain_dX: float = 0.1,
+    proportional_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
+    Tc: float = 0.5,  # s
+    Tc_tolerance: float = 0.1,
     # options for network connection
     cosmos_host: str = "127.0.0.1",
     cosmos_port: int = 11111,
@@ -62,11 +66,15 @@ def control(
     # create the EPL and subref converters
     get_epl = get_epl_converter(cal_interval)
     get_subref = get_subref_converter(
-        feed_model,
-        gain_dX,
-        gain_dZ,
-        range_ddX,
-        range_ddZ,
+        feed_model=feed_model,
+        proportional_gain_dX=proportional_gain_dX,
+        proportional_gain_dZ=proportional_gain_dZ,
+        integral_gain_dX=integral_gain_dX,
+        integral_gain_dZ=integral_gain_dZ,
+        range_ddX=range_ddX,
+        range_ddZ=range_ddZ,
+        Tc=Tc,
+        Tc_tolerance=Tc_tolerance,
     )
 
     with (

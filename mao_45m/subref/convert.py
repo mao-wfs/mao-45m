@@ -4,7 +4,6 @@ __all__ = [
     "get_converter",
     "get_homologous_epl",
     "get_measurement_matrix",
-    "get_zernike_matrix",
 ]
 
 
@@ -19,13 +18,14 @@ from os import PathLike
 import numpy as np
 import pandas as pd
 import xarray as xr
-from poppy.zernike import zernike
 from typing_extensions import Self
 
 
 # constants
 LOGGER = getLogger(__name__)
 NRO45M_DIAMETER = 45.0  # m
+ACCEPTABLE_ABSMAX_DX = 0.048  # m
+ACCEPTABLE_ABSMAX_DZ = 0.024  # m
 
 
 @dataclass(frozen=True)
@@ -37,8 +37,9 @@ class Subref:
             optimized for the gravity deformation correction.
         dZ: Estimated offset (in m) from the Z cylinder positions (Z1 = Z2)
             optimized for the gravity deformation correction.
-        m0: Estimated expansion coefficient of the Zernike polynomial Z(2, 0)
-        m1: Estimated expansion coefficient of the Zernike polynomial Z(1, -1).
+        m0: Expansion coefficient in the X direction.
+        m1: Expansion coefficient in the Z direction.
+        time: Timestamp of the estimated EPL.
 
     """
 
@@ -46,6 +47,7 @@ class Subref:
     dZ: float
     m0: float
     m1: float
+    time: np.datetime64 | None
 
 
 @dataclass
@@ -55,67 +57,35 @@ class Converter:
     Args:
         G: Homologous EPL (G; feed x elevation; in m).
         M: Measurement matrix (M; feed x drive).
-        Z: Zernike polynomial matrix (Z; feed x drive).
-        gain_dX: Propotional gain for the estimated dX.
-        gain_dZ: Propotional gain for the estimated dZ.
+        proportional_gain_dX: Propotional gain for the estimated dX.
+        proportional_gain_dZ: Propotional gain for the estimated dZ.
+        integral_gain_dX: Integral gain for the estimated dX.
+        integral_gain_dZ: Integral gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
+        Tc: Control period (in s).
+        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
         last: Last estimated subreflector parameters.
 
     """
 
     G: xr.DataArray
     M: xr.DataArray
-    Z: xr.DataArray
-    gain_dX: float = 0.1
-    gain_dZ: float = 0.1
+    proportional_gain_dX: float = 0.1
+    proportional_gain_dZ: float = 0.1
+    integral_gain_dX: float = 0.1
+    integral_gain_dZ: float = 0.1
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
-    last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0)
-
-    @classmethod
-    def from_feed_model(
-        cls,
-        feed_model: PathLike[str] | str,
-        gain_dX: float = 0.1,
-        gain_dZ: float = 0.1,
-        range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
-        range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-        last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0),
-    ) -> Self:
-        """Create an EPL-to-subref converter from given feed model.
-
-        Args:
-            feed_model: Path to the feed model CSV file.
-            gain_dX: Propotional gain for the estimated dX.
-            gain_dZ: Propotional gain for the estimated dZ.
-            range_ddX: Absolute range for ddX (in m).
-            range_ddZ: Absolute range for ddZ (in m).
-            last: Last estimated subreflector parameters.
-
-        """
-        return cls(
-            G=get_homologous_epl(feed_model),
-            M=get_measurement_matrix(feed_model),
-            Z=get_zernike_matrix(feed_model),
-            gain_dX=gain_dX,
-            gain_dZ=gain_dZ,
-            range_ddX=range_ddX,
-            range_ddZ=range_ddZ,
-            last=last,
-        )
+    Tc: float = 0.250  # s
+    Tc_tolerance: float = 0.1  # s
+    last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0, time=None)
 
     @cached_property
-    def inv_ZTZ_ZT(self) -> xr.DataArray:
-        """Pre-calculated (Z^T Z)^-1 Z^T (drive x feed)."""
-        Z_ = self.Z.rename(drive="drive_")
-        return get_inv(Z_ @ self.Z) @ Z_.T
-
-    @cached_property
-    def inv_ZTM_ZT(self) -> xr.DataArray:
-        """Pre-calculated (Z^T M)^-1 Z^T (drive x feed)."""
-        Z_ = self.Z.rename(drive="drive_")
-        return get_inv(Z_ @ self.M) @ Z_.T
+    def inv_MTM_MT(self) -> xr.DataArray:
+        """Pre-calculated (M^T M)^-1 M^T (drive x feed)."""
+        M_ = self.M.rename(drive="drive_")
+        return get_inv(M_ @ self.M) @ M_.T
 
     def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> Subref:
         """Convert EPL to subreflector parameters.
@@ -130,21 +100,52 @@ class Converter:
             Estimated subreflector parameters.
 
         """
+        if (self.last.time != None) and (
+            not (
+                self.Tc * (1 - self.Tc_tolerance)
+                <= (epl.time - self.last.time) / np.timedelta64(1, "s")
+                <= self.Tc * (1 + self.Tc_tolerance)
+            )
+        ):
+            LOGGER.warning(f"Control period exceeded the tolerance.")
+            return self.on_failure(epl)  # 異常発生時のEPL時刻
+
         depl = (
             epl
             - epl_cal
             - self.G.interp(elevation=epl.elevation)
             + self.G.interp(elevation=epl_cal.elevation)
         )
-        m = self.inv_ZTZ_ZT @ depl
-        d = self.inv_ZTM_ZT @ depl
+        m = self.inv_MTM_MT @ depl
 
         current = Subref(
-            dX=-self.gain_dX * float(d.sel(drive="X")),
-            dZ=-self.gain_dZ * float(d.sel(drive="Z")),
+            dX=self.last.dX
+            - self.integral_gain_dX * self.Tc * float(m.sel(drive="X"))
+            - self.proportional_gain_dX * (float(m.sel(drive="X")) - self.last.m0),
+            dZ=self.last.dZ
+            - self.integral_gain_dZ * self.Tc * float(m.sel(drive="Z"))
+            - self.proportional_gain_dZ * (float(m.sel(drive="Z")) - self.last.m1),
             m0=float(m.sel(drive="X")),
             m1=float(m.sel(drive="Z")),
+            time=epl.time.values,  # epl.timeがnp.datetime64 (UTC)だと仮定
         )
+
+        if not (
+            self.range_ddX[0] < np.abs(current.dX - self.last.dX) < self.range_ddX[1]
+        ):
+            return self.on_failure(epl)
+
+        if not (
+            self.range_ddZ[0] < np.abs(current.dZ - self.last.dZ) < self.range_ddZ[1]
+        ):
+            return self.on_failure(epl)
+
+        if not (
+            abs(current.dX) < ACCEPTABLE_ABSMAX_DX
+            and abs(current.dZ) < ACCEPTABLE_ABSMAX_DZ
+        ):
+            LOGGER.warning(f"Estimated subreflector parameters are out of range.")
+            return self.on_failure(epl)
 
         return self.on_success(current)
 
@@ -153,38 +154,58 @@ class Converter:
         self.last = estimated
         return estimated
 
-    def on_failure(self) -> Subref:
+    def on_failure(self, epl) -> Subref:
         """Return the last subreflector parameters without updating."""
+        self.last = Subref(
+            dX=self.last.dX,
+            dZ=self.last.dZ,
+            m0=self.last.m0,
+            m1=self.last.m1,
+            time=epl.time.values,
+        )
         return self.last
 
 
 def get_converter(
     feed_model: PathLike[str] | str,
-    gain_dX: float = 0.1,
-    gain_dZ: float = 0.1,
+    proportional_gain_dX: float = 0.1,
+    proportional_gain_dZ: float = 0.1,
+    integral_gain_dX: float = 0.1,
+    integral_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
+    Tc: float = 0.250,  # s
+    Tc_tolerance: float = 0.1,  # s
     /,
 ) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
 
     Args:
         feed_model: Path to the feed model CSV file.
-        gain_dX: Propotional gain for the estimated dX.
-        gain_dZ: Propotional gain for the estimated dZ.
+        proportional_gain_dX: Propotional gain for the estimated dX.
+        proportional_gain_dZ: Propotional gain for the estimated dZ.
+        integral_gain_dX: Integral gain for the estimated dX.
+        integral_gain_dZ: Integral gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
+        Tc: Control period (in s).
+        Tc_tolerance: Acceptable fraction of EPL time interval relative to Tc (0.1 means +/- 10% allowance).
 
     Returns:
         EPL-to-subref parameter converter.
 
     """
-    return Converter.from_feed_model(
-        feed_model=feed_model,
-        gain_dX=gain_dX,
-        gain_dZ=gain_dZ,
+    return Converter(
+        G=get_homologous_epl(feed_model),
+        M=get_measurement_matrix(feed_model),
+        proportional_gain_dX=proportional_gain_dX,
+        proportional_gain_dZ=proportional_gain_dZ,
+        integral_gain_dX=integral_gain_dX,
+        integral_gain_dZ=integral_gain_dZ,
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
+        Tc=Tc,
+        Tc_tolerance=Tc_tolerance,
     )
 
 
@@ -260,33 +281,4 @@ def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> xr.DataArray:
             "feed": df.index,
         },
         name="M",
-    ).T
-
-
-def get_zernike_matrix(feed_model: PathLike[str] | str, /) -> xr.DataArray:
-    """Get the Zernike polynomial matrix (Z; feed x drive) from given feed model.
-
-    Args:
-        feed_model: Path to the feed model CSV file.
-
-    Returns:
-        Zernike polynomial matrix (Z; feed x drive).
-
-    """
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
-    rho = df["position_radius"] / (NRO45M_DIAMETER / 2)
-    theta = np.deg2rad(df["position_angle"])
-
-    return xr.DataArray(
-        [
-            zernike(1, -1, rho=rho, theta=theta, noll_normalize=False),
-            zernike(2, 0, rho=rho, theta=theta, noll_normalize=False),
-        ],
-        dims=("drive", "feed"),
-        coords={
-            "drive": ["X", "Z"],
-            "feed": df.index,
-            "zernike": ("drive", ["1,-1", "2,0"]),
-        },
-        name="Z",
     ).T

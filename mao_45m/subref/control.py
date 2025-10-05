@@ -117,9 +117,8 @@ def control(
                         state = cosmos.receive_state()
 
                         # get the current VDIF samples (time x chan)
-                        samples = get_samples(
-                            frames.get(frame_size + FRAMES_PER_SAMPLE)
-                        )
+                        frames_ = frames.get(frame_size + FRAMES_PER_SAMPLE)
+                        samples = get_samples(frames_)
 
                         # get the aggregated data (feed x freq)
                         aggregated = get_aggregated(

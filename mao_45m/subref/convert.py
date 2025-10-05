@@ -30,7 +30,7 @@ SECOND = np.timedelta64(1, "s")
 
 @dataclass
 class Converter:
-    """EPL-to-subref parameter converter for the Nobeyama 45m telescope..
+    """EPL-to-subref control converter for the Nobeyama 45m telescope..
 
     Args:
         G: Homologous EPL (G; feed x elevation; in m).
@@ -63,7 +63,7 @@ class Converter:
         return get_inv(M_ @ self.M) @ M_.T
 
     def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> xr.DataArray:
-        """Convert EPL to subreflector parameters (u; drive; in m).
+        """Convert EPL to subreflector control (u; drive; in m).
 
         Args:
             epl: EPL to be converted (feed; in m)
@@ -72,7 +72,7 @@ class Converter:
                 with the telescope state information at that time.
 
         Returns:
-            Estimated subreflector parameters.
+            Estimated subreflector control.
 
         """
         depl: xr.DataArray = (
@@ -145,12 +145,12 @@ class Converter:
         return self.on_success(u)
 
     def on_success(self, current: xr.DataArray, /) -> xr.DataArray:
-        """Replace the last subreflector parameters with current one."""
+        """Replace the last subreflector control with current one."""
         self.last = current
         return current
 
     def on_failure(self, current: xr.DataArray, /) -> xr.DataArray:
-        """Replace the last subreflector parameters' time with current one."""
+        """Replace the last subreflector control's time with current one."""
         if self.last is None:
             m_zero = xr.zeros_like(current.m)
             u_zero = xr.zeros_like(current)
@@ -173,7 +173,7 @@ def get_converter(
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
 ) -> Converter:
-    """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
+    """Get an EPL-to-subref control converter for the Nobeyama 45m telescope.
 
     Args:
         control_period: Control period (float in s or string with units).
@@ -188,7 +188,7 @@ def get_converter(
         range_ddZ: Absolute range for ddZ (in m).
 
     Returns:
-        EPL-to-subref parameter converter.
+        EPL-to-subref control converter.
 
     """
     return Converter(

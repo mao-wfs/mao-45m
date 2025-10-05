@@ -2,6 +2,7 @@ __all__ = ["control"]
 
 
 # standard library
+from collections import deque
 from collections.abc import Sequence
 from logging import getLogger
 from os import PathLike
@@ -10,6 +11,7 @@ from time import sleep
 
 # dependencies
 import numpy as np
+import xarray as xr
 from ndtools import Range
 from tqdm import tqdm
 from .convert import get_converter as get_subref_converter
@@ -56,6 +58,11 @@ def control(
     vdif_port: int = 22222,
     # option for display
     status: bool = True,
+    # options for data saving
+    epl_data: PathLike[str] | str | None = None,
+    epl_data_max: int | None = None,
+    subref_data: PathLike[str] | str | None = None,
+    subref_data_max: int | None = None,
     # options for logging
     log_file: PathLike[str] | str | None = None,
     log_file_level: int | str = "INFO",
@@ -100,6 +107,9 @@ def control(
             while len(frames.get(frame_size)) != frame_size:
                 sleep(dt_epl / SECOND)
 
+            epls = deque(maxlen=epl_data_max)
+            subrefs = deque(maxlen=subref_data_max)
+
             try:
                 while True:
                     with take(dt_epl / SECOND):
@@ -127,14 +137,27 @@ def control(
                         # estimate the current subref parameters
                         subref = get_subref(epl, epl_cal)
 
-                        # send the subref parameters to COSMOS
+                        # send the subref control to COSMOS
                         if not dry_run:
                             cosmos.send_subref(
                                 dX=float(subref.sel(drive="X")),
                                 dZ=float(subref.sel(drive="Z")),
                             )
 
+                        # append EPL and/or subref data (optional)
+                        if epl_data is not None:
+                            epls.append(epl)
+
+                        if subref_data is not None:
+                            subrefs.append(subref)
+
                         # update the progress bar
                         bar.update(1)
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
+            finally:
+                if epl_data is not None:
+                    xr.concat(epls, dim="time").to_zarr(epl_data, mode="w")
+
+                if subref_data is not None:
+                    xr.concat(subrefs, dim="time").to_zarr(subref_data, mode="w")

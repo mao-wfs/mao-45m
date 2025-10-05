@@ -129,7 +129,10 @@ def control(
 
                         # send the subref parameters to COSMOS
                         if not dry_run:
-                            cosmos.send_subref(dX=subref.dX, dZ=subref.dZ)
+                            cosmos.send_subref(
+                                dX=float(subref.sel(drive="X")),
+                                dZ=float(subref.sel(drive="Z")),
+                            )
 
                         # update the progress bar
                         bar.update(1)

@@ -1,4 +1,9 @@
-__all__ = ["calc_epl", "get_spectra", "setup_receiver"]
+__all__ = [
+    "calc_epl",
+    "get_spectra",
+    "start_receiver",
+    "stop_receiver",
+]
 
 
 # standard library
@@ -9,7 +14,6 @@ from datetime import datetime, timedelta
 from logging import getLogger
 from scipy.optimize import curve_fit
 from struct import Struct
-from threading import Event, Lock, Thread
 from typing import Callable, NamedTuple
 
 
@@ -17,13 +21,14 @@ from typing import Callable, NamedTuple
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
+import multiprocessing
+from multiprocessing import Process, Manager
 from ..vdif.receive import get_socket
 
 
 # constants
 C = 299_792_458  # m/s
 LITTLE_ENDIAN: str = "<"
-LOCK = Lock()
 LOGGER = getLogger(__name__)
 LOWER_FREQ_MHZ = 16384
 N_BYTES_PER_SCAN: int = 1312 * 64
@@ -33,7 +38,7 @@ N_ROWS_CORR_DATA: int = 512
 N_ROWS_CORR_HEAD: int = 64
 N_ROWS_VDIF_HEAD: int = 8
 N_UNITS_PER_SCAN: int = 64
-PACKET_BUFFER = deque(maxlen=6000)
+# PACKET_BUFFER will be initialized in start_receiver()
 REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")
 REF_EPOCH_UNIT = np.timedelta64(6, "M")
 SHORT: str = "h"
@@ -43,39 +48,81 @@ UINT: str = "I"
 
 # global variables
 FEED = ["c", "t", "r", "b", "l"]
-UDP_READY_EVENT = Event()
+UDP_READY_EVENT = multiprocessing.Event()
+
+# Global receiver process management
+_receiver_process = None
+_receiver_manager = None
+_packet_buffer = None
+_receiver_lock = None
 
 
-@contextmanager
-def setup_receiver(
+def start_receiver(
     *,
     group: str = "239.0.0.1",
     port: int = 11111,
-) -> Iterator[None]:
-    """Setup the UDP receiver for EPL calculation.
+) -> None:
+    """Start the UDP receiver process for EPL calculation.
 
     Args:
         group: Multicast group address.
         port: Multicast port number.
 
+    Raises:
+        RuntimeError: If receiver is already running.
     """
+    global _receiver_process, _receiver_manager, _packet_buffer, _receiver_lock
+
+    if _receiver_process is not None and _receiver_process.is_alive():
+        raise RuntimeError("Receiver is already running. Call stop_receiver() first.")
+
+    _receiver_manager = Manager()
+    _packet_buffer = _receiver_manager.list()
+    _receiver_lock = _receiver_manager.Lock()
 
     sock = get_socket(group=group, port=port)
 
-    receiver_thread = Thread(
+    _receiver_process = Process(
         target=udp_receiver,
-        args=(sock, UDP_READY_EVENT),
+        args=(sock, UDP_READY_EVENT, _packet_buffer, _receiver_lock),
         daemon=True,
     )
 
-    try:
-        LOGGER.debug("Starting receiver thread...")
-        receiver_thread.start()
-        yield
-    finally:
-        LOGGER.debug("Finishing receiver thread...")
-        receiver_thread.join(timeout=1.0)
-        sock.close()
+    LOGGER.debug("Starting receiver Process...")
+    _receiver_process.start()
+
+
+def is_receiver_running() -> bool:
+    """Check if the receiver process is running.
+
+    Returns:
+        True if receiver is running, False otherwise.
+    """
+    global _receiver_process
+    return _receiver_process is not None and _receiver_process.is_alive()
+
+
+def stop_receiver() -> None:
+    """Stop the UDP receiver process.
+
+    This function stops the background receiver process and cleans up
+    shared resources.
+    """
+    global _receiver_process, _receiver_manager, _packet_buffer, _receiver_lock
+
+    if _receiver_process is not None and _receiver_process.is_alive():
+        LOGGER.debug("Stopping receiver Process...")
+        _receiver_process.terminate()
+        _receiver_process.join(timeout=1.0)
+        _receiver_process = None
+
+    # Clean up shared resources
+    if _receiver_manager is not None:
+        _receiver_manager.shutdown()
+        _receiver_manager = None
+
+    _packet_buffer = None
+    _receiver_lock = None
 
 
 def get_spectra(
@@ -97,13 +144,12 @@ def get_spectra(
 
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     COUNT = np.zeros(5, dtype=int)
-    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)  # MHz
+    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)
     SPECTRA = np.zeros((5, ch), dtype=np.complex128)
     FEED_PATTERN = feed_pattern
-    FREQ = get_freq(freq_binning)  # Hz
+    FREQ = get_freq(freq_binning)
     FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])]
 
-    UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
     scan = get_latest_packets(size)
@@ -130,7 +176,6 @@ def get_spectra(
     LOGGER.debug(
         f"start_time={start_time}, last_time={last_time}, d_time={last_time-start_time}"
     )
-
     return xr.DataArray(
         data=[
             np.array(SPECTRA[0] / COUNT[0]),
@@ -168,9 +213,9 @@ def calc_epl(spec: xr.DataArray) -> xr.DataArray:
     )
 
 
-def udp_receiver(sock, udp_ready_event):
+def udp_receiver(sock, udp_ready_event, packet_buffer, lock):
     while True:
-        temp_buffer = []
+
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
             array = np.frombuffer(
@@ -191,7 +236,7 @@ def udp_receiver(sock, udp_ready_event):
             ch = word_4[16:24]
             if ch == 64:
                 break
-
+        temp_buffer = []
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
 
@@ -208,8 +253,10 @@ def udp_receiver(sock, udp_ready_event):
                         "Channel sequence mismatch detected. Reinitializing reception."
                     )
                     break
-                with LOCK:
-                    PACKET_BUFFER.append(list(temp_buffer))
+                with lock:
+                    packet_buffer.append(list(temp_buffer))
+                    if len(packet_buffer) > 10000:
+                        del packet_buffer[0 : len(packet_buffer) - 5000]
                 temp_buffer.clear()
                 udp_ready_event.set()
 
@@ -273,8 +320,12 @@ def read_head(frame: bytes) -> head_data:
 
 
 def get_latest_packets(a: int) -> list:
-    with LOCK:
-        return list(PACKET_BUFFER)[-a:]
+    global _packet_buffer, _receiver_lock
+    if _packet_buffer is None or _receiver_lock is None:
+        raise RuntimeError("Receiver not started. Call start_receiver() first.")
+
+    with _receiver_lock:
+        return list(_packet_buffer)[-a:]
 
 
 def check_channel_order(packet_set: list[bytes]) -> bool:
@@ -344,19 +395,16 @@ def get_n_from_current_time(start_time: datetime, data_time: datetime) -> int:
 
 
 def get_amp(da: np.ndarray) -> np.ndarray:
-    """複素数DataArrayの絶対値Amplitudeを返す関数"""
     amp = np.abs(da)
     return amp
 
 
 def get_phase(da: np.ndarray) -> np.ndarray:
-    """複素数DataArrayの偏角(ラジアン単位)を返す関数"""
     phase = np.arctan2(da.imag, da.real)
     return phase
 
 
 def line_through_origin(freq: np.ndarray, slope: float) -> np.ndarray:
-    """原点を通る直線モデル"""
     return slope * freq
 
 

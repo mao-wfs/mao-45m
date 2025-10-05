@@ -8,7 +8,7 @@ __all__ = [
 
 
 # standard library
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import getLogger
 from os import PathLike
@@ -18,13 +18,13 @@ from os import PathLike
 import numpy as np
 import pandas as pd
 import xarray as xr
+from ..cosmos import ABSMAX_DX, ABSMAX_DZ
+from ..utils import to_timedelta
 
 
 # constants
 LOGGER = getLogger(__name__)
-NRO45M_DIAMETER = 45.0  # m
-ACCEPTABLE_ABSMAX_DX = 0.048  # m
-ACCEPTABLE_ABSMAX_DZ = 0.024  # m
+SECOND = np.timedelta64(1, "s")
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class Subref:
             optimized for the gravity deformation correction.
         m0: Expansion coefficient in the X direction.
         m1: Expansion coefficient in the Z direction.
-        time: Timestamp of the estimated EPL.
+        time: Time (in UTC) of the estimated EPL.
 
     """
 
@@ -56,29 +56,29 @@ class Converter:
     Args:
         G: Homologous EPL (G; feed x elevation; in m).
         M: Measurement matrix (M; feed x drive).
-        proportional_gain_dX: Propotional gain for the estimated dX.
-        proportional_gain_dZ: Propotional gain for the estimated dZ.
+        control_period: Control period (float in s or string with units).
+        epl_interval_tolerance: Acceptable fraction of EPL time interval
+            relative to the control period (0.1 means +/- 10% allowance).
         integral_gain_dX: Integral gain for the estimated dX.
         integral_gain_dZ: Integral gain for the estimated dZ.
+        proportional_gain_dX: Propotional gain for the estimated dX.
+        proportional_gain_dZ: Propotional gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        Tc: Control period (in s).
-        Tc_tolerance: Acceptable fraction of EPL time interval
-            relative to Tc (0.1 means +/- 10% allowance).
         last: Last estimated subreflector parameters.
 
     """
 
     G: xr.DataArray
     M: xr.DataArray
-    proportional_gain_dX: float = 0.1
-    proportional_gain_dZ: float = 0.1
+    control_period: np.timedelta64 | str | float = "0.5 s"
+    epl_interval_tolerance: float = 0.1
     integral_gain_dX: float = 0.1
     integral_gain_dZ: float = 0.1
+    proportional_gain_dX: float = 0.1
+    proportional_gain_dZ: float = 0.1
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
-    Tc: float = 0.250  # s
-    Tc_tolerance: float = 0.1  # s
     last: Subref = Subref(dX=0.0, dZ=0.0, m0=0.0, m1=0.0, time=None)
 
     @cached_property
@@ -100,16 +100,6 @@ class Converter:
             Estimated subreflector parameters.
 
         """
-        if (self.last.time != None) and (
-            not (
-                self.Tc * (1 - self.Tc_tolerance)
-                <= (epl.time - self.last.time) / np.timedelta64(1, "s")
-                <= self.Tc * (1 + self.Tc_tolerance)
-            )
-        ):
-            LOGGER.warning(f"Control period exceeded the tolerance.")
-            return self.on_failure(epl)  # 異常発生時のEPL時刻
-
         depl = (
             epl
             - epl_cal
@@ -119,80 +109,93 @@ class Converter:
         m = self.inv_MTM_MT @ depl
         m0 = float(m.sel(drive="X"))
         m1 = float(m.sel(drive="Z"))
+        tc = float(to_timedelta(self.control_period) / SECOND)
 
-        current = Subref(
-            dX=self.last.dX
-            - self.integral_gain_dX * self.Tc * m0
-            - self.proportional_gain_dX * (m0 - self.last.m0),
-            dZ=self.last.dZ
-            - self.integral_gain_dZ * self.Tc * m1
-            - self.proportional_gain_dZ * (m1 - self.last.m1),
-            m0=m0,
-            m1=m1,
-            time=epl.time.values,
+        dX = (
+            self.last.dX
+            - self.integral_gain_dX * tc * m0
+            - self.proportional_gain_dX * (m0 - self.last.m0)
         )
+        dZ = (
+            self.last.dZ
+            - self.integral_gain_dZ * tc * m1
+            - self.proportional_gain_dZ * (m1 - self.last.m1)
+        )
+        current = Subref(dX=dX, dZ=dZ, m0=m0, m1=m1, time=epl.time.data)
 
-        if not (
-            self.range_ddX[0] <= abs(current.dX - self.last.dX) <= self.range_ddX[1]
-        ):
-            return self.on_failure(epl)
+        if abs(dX) > ABSMAX_DX:
+            LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
+            return self.on_failure(current)
 
-        if not (
-            self.range_ddZ[0] <= abs(current.dZ - self.last.dZ) <= self.range_ddZ[1]
-        ):
-            return self.on_failure(epl)
+        if abs(dZ) > ABSMAX_DZ:
+            LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
+            return self.on_failure(current)
 
-        if not (
-            abs(current.dX) <= ACCEPTABLE_ABSMAX_DX
-            and abs(current.dZ) <= ACCEPTABLE_ABSMAX_DZ
-        ):
-            LOGGER.warning(f"Estimated subreflector parameters are out of range.")
-            return self.on_failure(epl)
+        if abs(ddX := dX - self.last.dX) < self.range_ddX[0]:
+            LOGGER.warning(f"{ddX=} is out of range (|ddX| >= {self.range_ddX[0]}).")
+            return self.on_failure(current)
+
+        if abs(ddX) > self.range_ddX[1]:
+            LOGGER.warning(f"{ddX=} is out of range (|ddX| <= {self.range_ddX[1]}).")
+            return self.on_failure(current)
+
+        if abs(ddZ := dZ - self.last.dZ) < self.range_ddZ[0]:
+            LOGGER.warning(f"{ddZ=} is out of range (|ddZ| >= {self.range_ddZ[0]}).")
+            return self.on_failure(current)
+
+        if abs(ddZ) > self.range_ddZ[1]:
+            LOGGER.warning(f"{ddZ=} is out of range (|ddZ| <= {self.range_ddZ[1]}).")
+            return self.on_failure(current)
+
+        if self.last.time is not None:
+            dt = (current.time - self.last.time) / SECOND  # type: ignore
+
+            if dt < (dt_min := tc * (1 - self.epl_interval_tolerance)):
+                LOGGER.warning(f"{dt=} is out of range (dt >= {dt_min}).")
+                return self.on_failure(current)
+
+            if dt > (dt_max := tc * (1 + self.epl_interval_tolerance)):
+                LOGGER.warning(f"{dt=} is out of range (dt <= {dt_max}).")
+                return self.on_failure(current)
 
         return self.on_success(current)
 
-    def on_success(self, estimated: Subref, /) -> Subref:
-        """Return the estimated subreflector parameters and update the last."""
-        self.last = estimated
-        return estimated
+    def on_success(self, current: Subref, /) -> Subref:
+        """Replace the last subreflector parameters with current one."""
+        self.last = current
+        return self.last
 
-    def on_failure(self, epl: xr.DataArray, /) -> Subref:
-        """Return the last subreflector parameters without updating."""
-        self.last = Subref(
-            dX=self.last.dX,
-            dZ=self.last.dZ,
-            m0=self.last.m0,
-            m1=self.last.m1,
-            time=epl.time.values,
-        )
+    def on_failure(self, current: Subref, /) -> Subref:
+        """Replace the time of the last subreflector parameters with current one."""
+        self.last = replace(self.last, time=current.time)
         return self.last
 
 
 def get_converter(
     *,
+    control_period: np.timedelta64 | str | float = "0.5 s",
+    epl_interval_tolerance: float = 0.1,
     feed_model: PathLike[str] | str,
-    proportional_gain_dX: float = 0.1,
-    proportional_gain_dZ: float = 0.1,
     integral_gain_dX: float = 0.1,
     integral_gain_dZ: float = 0.1,
+    proportional_gain_dX: float = 0.1,
+    proportional_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-    Tc: float = 0.250,  # s
-    Tc_tolerance: float = 0.1,
 ) -> Converter:
     """Get an EPL-to-subref parameter converter for the Nobeyama 45m telescope.
 
     Args:
+        control_period: Control period (float in s or string with units).
+        epl_interval_tolerance: Acceptable fraction of EPL time interval
+            relative to the control period (0.1 means +/- 10% allowance).
         feed_model: Path to the feed model CSV file.
-        proportional_gain_dX: Propotional gain for the estimated dX.
-        proportional_gain_dZ: Propotional gain for the estimated dZ.
         integral_gain_dX: Integral gain for the estimated dX.
         integral_gain_dZ: Integral gain for the estimated dZ.
+        proportional_gain_dX: Proportional gain for the estimated dX.
+        proportional_gain_dZ: Proportional gain for the estimated dZ.
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        Tc: Control period (in s).
-        Tc_tolerance: Acceptable fraction of EPL time interval
-            relative to Tc (0.1 means +/- 10% allowance).
 
     Returns:
         EPL-to-subref parameter converter.
@@ -201,14 +204,14 @@ def get_converter(
     return Converter(
         G=get_homologous_epl(feed_model),
         M=get_measurement_matrix(feed_model),
+        control_period=control_period,
+        epl_interval_tolerance=epl_interval_tolerance,
         proportional_gain_dX=proportional_gain_dX,
         proportional_gain_dZ=proportional_gain_dZ,
         integral_gain_dX=integral_gain_dX,
         integral_gain_dZ=integral_gain_dZ,
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
-        Tc=Tc,
-        Tc_tolerance=Tc_tolerance,
     )
 
 

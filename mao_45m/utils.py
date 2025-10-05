@@ -102,8 +102,10 @@ def take(duration: float, /, *, precise: bool = False) -> Iterator[None]:
     end = perf_counter()
 
     if (elapsed := end - start) > duration:
-        LOGGER.warning(f"Block run exceeds {duration} s.")
+        LOGGER.warning(f"Block run exceeded {duration} s.")
     else:
+        LOGGER.debug(f"Block run finished in {elapsed} s.")
+
         if precise:
             sleep(duration - elapsed)
         else:

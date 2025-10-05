@@ -2,6 +2,7 @@ __all__ = ["control"]
 
 
 # standard library
+from collections import deque
 from collections.abc import Sequence
 from logging import getLogger
 from os import PathLike
@@ -10,6 +11,7 @@ from time import sleep
 
 # dependencies
 import numpy as np
+import xarray as xr
 from ndtools import Range
 from tqdm import tqdm
 from .convert import get_converter as get_subref_converter
@@ -40,14 +42,14 @@ def control(
     integ_per_epl: np.timedelta64 | str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = True,
+    control_period: np.timedelta64 | str | float = "0.5 s",
+    epl_interval_tolerance: float = 0.1,
     integral_gain_dX: float = 0.1,
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-    Tc: float = 0.5,  # s
-    Tc_tolerance: float = 0.1,
     # options for network connection
     cosmos_host: str = "127.0.0.1",
     cosmos_port: int = 11111,
@@ -56,6 +58,11 @@ def control(
     vdif_port: int = 22222,
     # option for display
     status: bool = True,
+    # options for data saving
+    epl_data: PathLike[str] | str | None = None,
+    epl_data_max: int | None = None,
+    subref_data: PathLike[str] | str | None = None,
+    subref_data_max: int | None = None,
     # options for logging
     log_file: PathLike[str] | str | None = None,
     log_file_level: int | str = "INFO",
@@ -80,6 +87,8 @@ def control(
         # create the EPL and subref converters
         get_epl = get_epl_converter(cal_interval)
         get_subref = get_subref_converter(
+            control_period=control_period,
+            epl_interval_tolerance=epl_interval_tolerance,
             feed_model=feed_model,
             proportional_gain_dX=proportional_gain_dX,
             proportional_gain_dZ=proportional_gain_dZ,
@@ -87,8 +96,6 @@ def control(
             integral_gain_dZ=integral_gain_dZ,
             range_ddX=range_ddX,
             range_ddZ=range_ddZ,
-            Tc=Tc,
-            Tc_tolerance=Tc_tolerance,
         )
 
         with (
@@ -99,6 +106,9 @@ def control(
             # wait until enough frames are buffered
             while len(frames.get(frame_size)) != frame_size:
                 sleep(dt_epl / SECOND)
+
+            epls = deque(maxlen=epl_data_max)
+            subrefs = deque(maxlen=subref_data_max)
 
             try:
                 while True:
@@ -123,17 +133,31 @@ def control(
 
                         # estimate the EPL (in m; feed)
                         epl, epl_cal = get_epl(aggregated)
-                        LOGGER.info(epl)
 
                         # estimate the current subref parameters
                         subref = get_subref(epl, epl_cal)
-                        LOGGER.info(subref)
 
-                        # send the subref parameters to COSMOS
+                        # send the subref control to COSMOS
                         if not dry_run:
-                            cosmos.send_subref(dX=subref.dX, dZ=subref.dZ)
+                            cosmos.send_subref(
+                                dX=float(subref.sel(drive="X")),
+                                dZ=float(subref.sel(drive="Z")),
+                            )
+
+                        # append EPL and/or subref data (optional)
+                        if epl_data is not None:
+                            epls.append(epl)
+
+                        if subref_data is not None:
+                            subrefs.append(subref)
 
                         # update the progress bar
                         bar.update(1)
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
+            finally:
+                if epl_data is not None:
+                    xr.concat(epls, dim="time").to_zarr(epl_data, mode="w")
+
+                if subref_data is not None:
+                    xr.concat(subrefs, dim="time").to_zarr(subref_data, mode="w")

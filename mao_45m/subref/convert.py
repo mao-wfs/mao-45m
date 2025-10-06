@@ -1,6 +1,7 @@
 __all__ = [
     "Converter",
     "get_converter",
+    "get_epl_offsets",
     "get_homologous_epl",
     "get_integral_gain",
     "get_measurement_matrix",
@@ -66,8 +67,9 @@ class Converter:
         self,
         epl: xr.DataArray,
         epl_cal: xr.DataArray,
-        epl_offset: xr.DataArray | None,
         /,
+        *,
+        epl_offset: xr.DataArray | None,
     ) -> xr.DataArray:
         """Convert EPL to subreflector control (u; drive; in m).
 
@@ -90,14 +92,14 @@ class Converter:
         )
 
         LOGGER.info(
-            "Raw "
+            "Raw".ljust(10)
             + ", ".join(
                 f"EPL({feed})={1e3 * epl.sel(feed=feed):+.3f}mm"
                 for feed in epl.feed.data
             )
         )
         LOGGER.info(
-            "Cor "
+            "Corrected".ljust(10)
             + ", ".join(
                 f"EPL({feed})={1e3 * depl.sel(feed=feed):+.3f}mm"
                 for feed in depl.feed.data
@@ -107,7 +109,15 @@ class Converter:
         if epl_offset is None:
             m = self.inv_MTM_MT @ depl
         else:
-            m = self.inv_MTM_MT @ (depl + epl_offset)
+            m = self.inv_MTM_MT @ (depl + epl_offset.drop_vars("time"))
+
+            LOGGER.info(
+                "Offset".ljust(10)
+                + ", ".join(
+                    f"EPL({feed})={1e3 * epl_offset.sel(feed=feed):+.3f}mm"
+                    for feed in epl_offset.feed.data
+                )
+            )
 
         tc = float(to_timedelta(self.control_period) / SECOND)
 
@@ -237,6 +247,20 @@ def get_converter(
         epl_interval_tolerance=epl_interval_tolerance,
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
+    )
+
+
+def get_epl_offsets(epl_offsets: PathLike[str] | str, /) -> xr.DataArray:
+    """Get the EPL offsets (time x feed; in m) from given CSV file."""
+    df = pd.read_csv(epl_offsets, comment="#", index_col=0, skipinitialspace=True)
+    df = df.set_index(pd.to_timedelta(df.index, unit="s"))
+
+    return (
+        df.to_xarray()
+        .to_dataarray(dim="feed")
+        .assign_attrs(units="m")
+        .rename("epl_offsets")
+        .T
     )
 
 

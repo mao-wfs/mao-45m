@@ -6,7 +6,9 @@ from collections import deque
 from collections.abc import Sequence
 from logging import getLogger
 from os import PathLike
+from pathlib import Path
 from time import sleep
+from warnings import catch_warnings, simplefilter
 
 
 # dependencies
@@ -26,6 +28,7 @@ from ..utils import log, take, to_timedelta
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
+TIME_UNITS = "microseconds since 2000-01-01T00:00:00"
 
 
 def control(
@@ -158,8 +161,28 @@ def control(
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
             finally:
+                # save EPL data (optional)
                 if epl_data is not None:
-                    xr.concat(epls, dim="time").to_zarr(epl_data, mode="w")
+                    encoding = {"time": {"units": TIME_UNITS}}
+                    epls = xr.concat(epls, dim="time")
 
+                    with catch_warnings():
+                        simplefilter("ignore", category=UserWarning)
+
+                        if Path(epl_data).exists():
+                            epls.to_zarr(epl_data, mode="a", append_dim="time")
+                        else:
+                            epls.to_zarr(epl_data, mode="w", encoding=encoding)
+
+                # save subref data (optional)
                 if subref_data is not None:
-                    xr.concat(subrefs, dim="time").to_zarr(subref_data, mode="w")
+                    encoding = {"time": {"units": TIME_UNITS}}
+                    subrefs = xr.concat(subrefs, dim="time")
+
+                    with catch_warnings():
+                        simplefilter("ignore", category=UserWarning)
+
+                        if Path(subref_data).exists():
+                            subrefs.to_zarr(subref_data, mode="a", append_dim="time")
+                        else:
+                            subrefs.to_zarr(subref_data, mode="w", encoding=encoding)

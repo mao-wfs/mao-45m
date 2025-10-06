@@ -89,10 +89,26 @@ class Converter:
             + self.G.interp(elevation=epl_cal.elevation.data)
         )
 
+        LOGGER.info(
+            "Raw "
+            + ", ".join(
+                f"EPL({feed})={1e3 * epl.sel(feed=feed):+.3f}mm"
+                for feed in epl.feed.data
+            )
+        )
+        LOGGER.info(
+            "Cor "
+            + ", ".join(
+                f"EPL({feed})={1e3 * depl.sel(feed=feed):+.3f}mm"
+                for feed in depl.feed.data
+            )
+        )
+
         if epl_offset is None:
             m = self.inv_MTM_MT @ depl
         else:
             m = self.inv_MTM_MT @ (depl + epl_offset)
+
         tc = float(to_timedelta(self.control_period) / SECOND)
 
         if self.last is None:
@@ -157,6 +173,18 @@ class Converter:
 
     def on_success(self, current: xr.DataArray, /) -> xr.DataArray:
         """Replace the last subreflector control with current one."""
+        LOGGER.info(
+            ", ".join(
+                f"u({drive})={1e3 * current.sel(drive=drive):+.3f}mm"
+                for drive in current.drive.data
+            )
+        )
+        LOGGER.info(
+            ", ".join(
+                f"m({drive})={1e3 * current.m.sel(drive=drive):+.3f}mm"
+                for drive in current.drive.data
+            )
+        )
         self.last = current
         return current
 
@@ -165,11 +193,9 @@ class Converter:
         if self.last is None:
             m_zero = xr.zeros_like(current.m)
             u_zero = xr.zeros_like(current)
-            self.last = u_zero.assign_coords(m=m_zero)
+            return self.on_success(u_zero.assign_coords(m=m_zero))
         else:
-            self.last = self.last.assign_coords(time=current.time)
-
-        return self.last
+            return self.on_success(self.last.assign_coords(time=current.time))
 
 
 def get_converter(

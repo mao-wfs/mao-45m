@@ -18,7 +18,7 @@ from dateparser import parse
 
 # constants
 LOGGER = getLogger(__name__)
-LOGGER_FORMAT = "{asctime} | {funcName} | {levelname} | {message}"
+LOGGER_FORMAT = "{asctime} | {name} | {levelname} | {message}"
 
 
 class ISO8601Formatter(Formatter):

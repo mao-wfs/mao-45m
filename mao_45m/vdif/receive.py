@@ -21,6 +21,11 @@ from socket import (
 from struct import pack
 from threading import Event, Lock, Thread
 
+try:
+    from socket import SO_REUSEPORT  # type: ignore
+except ImportError:
+    SO_REUSEPORT = None  # type: ignore
+
 
 # dependencies
 from tqdm import tqdm
@@ -179,6 +184,10 @@ def get_socket(*, group: str = "239.0.0.1", port: int = 11111) -> socket:
     """Get a socket object for UDP multicast."""
     sock = socket(AF_INET, SOCK_DGRAM)
     sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+
+    if SO_REUSEPORT is not None:
+        sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
+
     sock.bind(("", port))
 
     mreq = pack("4sL", inet_aton(group), INADDR_ANY)

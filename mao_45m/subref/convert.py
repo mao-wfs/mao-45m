@@ -62,7 +62,13 @@ class Converter:
         M_ = self.M.rename(drive="drive_")
         return get_inv(M_ @ self.M) @ M_.T
 
-    def __call__(self, epl: xr.DataArray, epl_cal: xr.DataArray, /) -> xr.DataArray:
+    def __call__(
+        self,
+        epl: xr.DataArray,
+        epl_cal: xr.DataArray,
+        epl_offset: xr.DataArray | None,
+        /,
+    ) -> xr.DataArray:
         """Convert EPL to subreflector control (u; drive; in m).
 
         Args:
@@ -70,6 +76,7 @@ class Converter:
                 with the telescope state information at that time.
             epl_cal: EPL at calibration (feed; in m; must be zero)
                 with the telescope state information at that time.
+            epl_offset: EPL offset to be added to the EPL (feed; in m).
 
         Returns:
             Estimated subreflector control.
@@ -81,7 +88,11 @@ class Converter:
             - self.G.interp(elevation=epl.elevation.data)
             + self.G.interp(elevation=epl_cal.elevation.data)
         )
-        m = self.inv_MTM_MT @ depl
+
+        if epl_offset is None:
+            m = self.inv_MTM_MT @ depl
+        else:
+            m = self.inv_MTM_MT @ (depl + epl_offset)
         tc = float(to_timedelta(self.control_period) / SECOND)
 
         if self.last is None:

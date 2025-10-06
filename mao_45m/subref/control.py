@@ -184,26 +184,26 @@ def control(
             finally:
                 # save EPL data (optional)
                 if epl_data is not None:
-                    encoding = {"time": {"units": TIME_UNITS}}
-                    epls = xr.concat(epls, dim="time")
-
-                    with catch_warnings():
-                        simplefilter("ignore", category=UserWarning)
-
-                        if Path(epl_data).exists():
-                            epls.to_zarr(epl_data, mode="a", append_dim="time")
-                        else:
-                            epls.to_zarr(epl_data, mode="w", encoding=encoding)
+                    save_dataarray(xr.concat(epls, dim="time"), epl_data)
 
                 # save subref data (optional)
                 if subref_data is not None:
-                    encoding = {"time": {"units": TIME_UNITS}}
-                    subrefs = xr.concat(subrefs, dim="time")
+                    save_dataarray(xr.concat(subrefs, dim="time"), subref_data)
 
-                    with catch_warnings():
-                        simplefilter("ignore", category=UserWarning)
+                # finish the subref control
+                LOGGER.info("Subreflector control finished.")
 
-                        if Path(subref_data).exists():
-                            subrefs.to_zarr(subref_data, mode="a", append_dim="time")
-                        else:
-                            subrefs.to_zarr(subref_data, mode="w", encoding=encoding)
+
+def save_dataarray(da: xr.DataArray, zarr: PathLike[str] | str, /) -> Path:
+    """Save (append) the given DataArray to the given Zarr file."""
+    encoding = {"time": {"units": TIME_UNITS}}
+
+    with catch_warnings():
+        simplefilter("ignore", category=UserWarning)
+
+        if Path(zarr).exists():
+            da.to_zarr(zarr, mode="a", append_dim="time")
+        else:
+            da.to_zarr(zarr, mode="w", encoding=encoding)
+
+    return Path(zarr).expanduser().resolve()

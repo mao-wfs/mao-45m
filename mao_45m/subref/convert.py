@@ -91,8 +91,8 @@ class Converter:
         LOGGER.info(
             "Cor "
             + ", ".join(
-                f"EPL({feed})={1e3 * epl_cal.sel(feed=feed):+.3f}mm"
-                for feed in epl.feed.data
+                f"EPL({feed})={1e3 * depl.sel(feed=feed):+.3f}mm"
+                for feed in depl.feed.data
             )
         )
 

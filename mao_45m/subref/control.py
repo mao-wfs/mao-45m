@@ -42,6 +42,7 @@ def control(
     integ_per_epl: np.timedelta64 | str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = True,
+    control_duration: np.timedelta64 | str | float = "1 d",
     control_period: np.timedelta64 | str | float = "0.5 s",
     epl_interval_tolerance: float = 0.1,
     integral_gain_dX: float = 0.1,
@@ -80,8 +81,10 @@ def control(
             LOGGER.debug(f"{key}: {val!r}")
 
         # define the frame size for each EPL estimate
+        dt_control = to_timedelta(control_duration)
         dt_epl = to_timedelta(integ_per_epl)
         dt_sample = to_timedelta(integ_per_sample)
+        epl_size = int(dt_control / dt_epl)
         frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
         # create the EPL and subref converters
@@ -111,7 +114,7 @@ def control(
             subrefs = deque(maxlen=subref_data_max)
 
             try:
-                while True:
+                for _ in range(epl_size):
                     with take(dt_epl / SECOND):
                         # get the current telescope state
                         state = cosmos.receive_state()

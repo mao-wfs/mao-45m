@@ -16,13 +16,13 @@ import numpy as np
 import xarray as xr
 from ndtools import Range
 from tqdm import tqdm
-from .convert import get_converter as get_subref_converter
+from .convert import get_converter as get_subref_converter, get_epl_offsets
 from ..cosmos import get_cosmos
 from ..epl.convert import get_aggregated, get_converter as get_epl_converter
 from ..vdif import FRAMES_PER_SAMPLE
 from ..vdif.convert import get_samples
 from ..vdif.receive import get_frames
-from ..utils import log, take, to_timedelta
+from ..utils import log, take, to_datetime, to_timedelta
 
 
 # constants
@@ -46,8 +46,10 @@ def control(
     # options for the subref control
     dry_run: bool = True,
     control_duration: np.timedelta64 | str | float = "1 d",
+    control_origin: np.datetime64 | str = "Now UTC",
     control_period: np.timedelta64 | str | float = "0.5 s",
     epl_interval_tolerance: float = 0.1,
+    epl_offset_schedule: PathLike[str] | str | None = None,
     integral_gain_dX: float = 0.1,
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
@@ -104,6 +106,12 @@ def control(
             range_ddZ=range_ddZ,
         )
 
+        # create the EPL offset schedule
+        if epl_offset_schedule is not None:
+            epl_offsets = get_epl_offsets(epl_offset_schedule)
+        else:
+            epl_offsets = None
+
         with (
             tqdm(disable=not status, unit="EPL") as bar,
             get_cosmos(host=cosmos_host, port=cosmos_port, safe=cosmos_safe) as cosmos,
@@ -115,6 +123,10 @@ def control(
 
             epls = deque(maxlen=epl_data_max)
             subrefs = deque(maxlen=subref_data_max)
+
+            # start the subref control
+            LOGGER.info("Subreflector control started.")
+            control_origin = to_datetime(control_origin)
 
             try:
                 for _ in range(epl_size):
@@ -139,8 +151,17 @@ def control(
                         # estimate the EPL (in m; feed)
                         epl, epl_cal = get_epl(aggregated)
 
+                        # get the current EPL offset (in m; feed)
+                        if epl_offsets is not None:
+                            epl_offset = epl_offsets.reindex(
+                                time=[to_datetime("Now UTC") - control_origin],
+                                method="ffill",
+                            )[0]
+                        else:
+                            epl_offset = None
+
                         # estimate the current subref parameters
-                        subref = get_subref(epl, epl_cal)
+                        subref = get_subref(epl, epl_cal, epl_offset=epl_offset)
 
                         # send the subref control to COSMOS
                         if not dry_run:

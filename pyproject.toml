@@ -1,6 +1,6 @@
 [project]
 name = "mao-45m"
-version = "0.3.1"
+version = "0.4.0"
 description = "MAO controller for the Nobeyama 45m telescope"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"

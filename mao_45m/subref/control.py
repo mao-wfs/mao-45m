@@ -6,7 +6,9 @@ from collections import deque
 from collections.abc import Sequence
 from logging import getLogger
 from os import PathLike
+from pathlib import Path
 from time import sleep
+from warnings import catch_warnings, simplefilter
 
 
 # dependencies
@@ -26,6 +28,7 @@ from ..utils import log, take, to_timedelta
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
+TIME_UNITS = "microseconds since 2000-01-01T00:00:00"
 
 
 def control(
@@ -42,6 +45,7 @@ def control(
     integ_per_epl: np.timedelta64 | str | float = "0.5 s",
     # options for the subref control
     dry_run: bool = True,
+    control_duration: np.timedelta64 | str | float = "1 d",
     control_period: np.timedelta64 | str | float = "0.5 s",
     epl_interval_tolerance: float = 0.1,
     integral_gain_dX: float = 0.1,
@@ -80,8 +84,10 @@ def control(
             LOGGER.debug(f"{key}: {val!r}")
 
         # define the frame size for each EPL estimate
+        dt_control = to_timedelta(control_duration)
         dt_epl = to_timedelta(integ_per_epl)
         dt_sample = to_timedelta(integ_per_sample)
+        epl_size = int(dt_control / dt_epl)
         frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
         # create the EPL and subref converters
@@ -111,7 +117,7 @@ def control(
             subrefs = deque(maxlen=subref_data_max)
 
             try:
-                while True:
+                for _ in range(epl_size):
                     with take(dt_epl / SECOND):
                         # get the current telescope state
                         state = cosmos.receive_state()
@@ -155,8 +161,28 @@ def control(
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
             finally:
+                # save EPL data (optional)
                 if epl_data is not None:
-                    xr.concat(epls, dim="time").to_zarr(epl_data, mode="w")
+                    encoding = {"time": {"units": TIME_UNITS}}
+                    epls = xr.concat(epls, dim="time")
 
+                    with catch_warnings():
+                        simplefilter("ignore", category=UserWarning)
+
+                        if Path(epl_data).exists():
+                            epls.to_zarr(epl_data, mode="a", append_dim="time")
+                        else:
+                            epls.to_zarr(epl_data, mode="w", encoding=encoding)
+
+                # save subref data (optional)
                 if subref_data is not None:
-                    xr.concat(subrefs, dim="time").to_zarr(subref_data, mode="w")
+                    encoding = {"time": {"units": TIME_UNITS}}
+                    subrefs = xr.concat(subrefs, dim="time")
+
+                    with catch_warnings():
+                        simplefilter("ignore", category=UserWarning)
+
+                        if Path(subref_data).exists():
+                            subrefs.to_zarr(subref_data, mode="a", append_dim="time")
+                        else:
+                            subrefs.to_zarr(subref_data, mode="w", encoding=encoding)

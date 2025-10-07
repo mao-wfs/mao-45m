@@ -48,6 +48,10 @@ def control(
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
+    anti_windup_gain_dX: float = 10,
+    anti_windup_gain_dZ: float = 10,
+    range_dX: tuple[float, float] = (-0.038, 0.038),  # m
+    range_dZ: tuple[float, float] = (-0.019, 0.019),  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
     # options for network connection
@@ -94,6 +98,10 @@ def control(
             proportional_gain_dZ=proportional_gain_dZ,
             integral_gain_dX=integral_gain_dX,
             integral_gain_dZ=integral_gain_dZ,
+            anti_windup_gain_dX=anti_windup_gain_dX,
+            anti_windup_gain_dZ=anti_windup_gain_dZ,
+            range_dX=range_dX,
+            range_dZ=range_dZ,
             range_ddX=range_ddX,
             range_ddZ=range_ddZ,
         )

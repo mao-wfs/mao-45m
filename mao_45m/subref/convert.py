@@ -5,6 +5,8 @@ __all__ = [
     "get_integral_gain",
     "get_measurement_matrix",
     "get_proportional_gain",
+    "get_anti_windup_gain",
+    "saturate_subref_control",
 ]
 
 
@@ -36,10 +38,13 @@ class Converter:
         G: Homologous EPL (G; feed x elevation; in m).
         K_I: Integral gain (K_I; feed).
         K_P: Proportional gain (K_I; feed).
+        K_a: Anti-windup gain (K_a; feed).
         M: Measurement matrix (M; feed x drive).
         control_period: Control period (float in s or string with units).
         epl_interval_tolerance: Acceptable fraction of EPL time interval
             relative to the control period (0.1 means +/- 10% allowance).
+        range_dX: Absolute range for dX (in m).
+        range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         last: Last estimated subreflector parameters.
@@ -50,8 +55,11 @@ class Converter:
     M: xr.DataArray
     K_I: xr.DataArray
     K_P: xr.DataArray
+    K_a: xr.DataArray
     control_period: np.timedelta64 | str | float = "0.5 s"
     epl_interval_tolerance: float = 0.1
+    range_dX: tuple[float, float] = (-0.038, 0.038)  # m
+    range_dZ: tuple[float, float] = (-0.019, 0.019)  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     last: xr.DataArray | None = None
@@ -96,7 +104,7 @@ class Converter:
         tc = float(to_timedelta(self.control_period) / SECOND)
 
         if self.last is None:
-            if (self.K_I == 0).all():
+            if (self.K_I == 0).all():  # P control
                 u: xr.DataArray = (
                     (-self.K_P * m)
                     .assign_coords(m=m.assign_attrs(units="m"))
@@ -104,10 +112,18 @@ class Converter:
                     .rename("u")
                 )
 
-            else:
+            else:  # PI control with anti-windup
+                v: xr.DataArray = -tc * m
+                u_tmp: xr.DataArray = self.K_I * v - self.K_P * m
                 u: xr.DataArray = (
-                    (-self.K_I * tc * m - self.K_P * m)
-                    .assign_coords(m=m.assign_attrs(units="m"))
+                    (saturate_subref_control(u_tmp, self.range_dX, self.range_dZ))
+                    .assign_coords(
+                        {
+                            "m": m.assign_attrs(units="m"),
+                            "v": v.assign_attrs(units="m*s"),
+                            "u_tmp": u_tmp.assign_attrs(units="m"),
+                        }
+                    )
                     .assign_attrs(units="m")
                     .rename("u")
                 )
@@ -122,7 +138,7 @@ class Converter:
 
             return self.on_success(u)
 
-        if (self.K_I == 0).all():
+        if (self.K_I == 0).all():  # P control
             u: xr.DataArray = (
                 (-self.K_P * m)
                 .assign_coords(m=m.assign_attrs(units="m"))
@@ -130,10 +146,20 @@ class Converter:
                 .rename("u")
             )
 
-        else:
+        else:  # PI control with anti-windup
+            v: xr.DataArray = (
+                self.last.v - tc * m - tc * self.K_a * (self.last - self.last.u_tmp)
+            )
+            u_tmp = self.K_I * v - self.K_P * m
             u: xr.DataArray = (
-                (self.last - self.K_I * tc * m - self.K_P * (m - self.last.m))
-                .assign_coords(m=m.assign_attrs(units="m"))
+                (saturate_subref_control(u_tmp, self.range_dX, self.range_dZ))
+                .assign_coords(
+                    {
+                        "m": m.assign_attrs(units="m"),
+                        "v": v.assign_attrs(units="m*s"),
+                        "u_tmp": u_tmp.assign_attrs(units="m"),
+                    }
+                )
                 .assign_attrs(units="m")
                 .rename("u")
             )
@@ -181,9 +207,18 @@ class Converter:
     def on_failure(self, current: xr.DataArray, /) -> xr.DataArray:
         """Replace the last subreflector control's time with current one."""
         if self.last is None:
-            m_zero = xr.zeros_like(current.m)
-            u_zero = xr.zeros_like(current)
-            self.last = u_zero.assign_coords(m=m_zero)
+            if (self.K_I == 0).all():  # P control
+                m_zero = xr.zeros_like(current.m)
+                u_zero = xr.zeros_like(current)
+                self.last = u_zero.assign_coords(m=m_zero)
+            else:  # PI control with anti-windup
+                m_zero = xr.zeros_like(current.m)
+                v_zero = xr.zeros_like(current.v)
+                u_tmp_zero = xr.zeros_like(current.u_tmp)
+                u_zero = xr.zeros_like(current)
+                self.last = u_zero.assign_coords(
+                    {"m": m_zero, "v": v_zero, "u_tmp": u_tmp_zero}
+                )
         else:
             self.last = self.last.assign_coords(time=current.time)
 
@@ -199,6 +234,10 @@ def get_converter(
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
+    anti_windup_gain_gain_dX: float = 10,
+    anti_windup_gain_gain_dZ: float = 10,
+    range_dX: tuple[float, float] = (-0.038, 0.038),  # m
+    range_dZ: tuple[float, float] = (-0.019, 0.019),  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
 ) -> Converter:
@@ -213,6 +252,10 @@ def get_converter(
         integral_gain_dZ: Integral gain for the estimated dZ.
         proportional_gain_dX: Proportional gain for the estimated dX.
         proportional_gain_dZ: Proportional gain for the estimated dZ.
+        anti_windup_gain_gain_dX: Anti-windup gain for the estimated dX.
+        anti_windup_gain_gain_dZ: Anti-windup gain for the estimated dZ.
+        range_dX: Absolute range for dX (in m).
+        range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
 
@@ -225,8 +268,11 @@ def get_converter(
         M=get_measurement_matrix(feed_model),
         K_I=get_integral_gain(integral_gain_dX, integral_gain_dZ),
         K_P=get_proportional_gain(proportional_gain_dX, proportional_gain_dZ),
+        K_a=get_anti_windup_gain(anti_windup_gain_gain_dX, anti_windup_gain_gain_dZ),
         control_period=control_period,
         epl_interval_tolerance=epl_interval_tolerance,
+        range_dX=range_dX,
+        range_dZ=range_dZ,
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
     )
@@ -325,3 +371,33 @@ def get_proportional_gain(dX: float, dZ: float, /) -> xr.DataArray:
         coords={"drive": ["X", "Z"]},
         name="K_P",
     )
+
+
+def get_anti_windup_gain(dX: float, dZ: float, /) -> xr.DataArray:
+    """Get the anti-windup gain (K_a; feed) from given values."""
+    return xr.DataArray(
+        data=[dX, dZ],
+        dims="drive",
+        coords={"drive": ["X", "Z"]},
+        name="K_a",
+    )
+
+
+def saturate_subref_control(
+    u_tmp: xr.DataArray, range_dX: tuple[float, float], range_dZ: tuple[float, float]
+) -> xr.DataArray:
+    """Saturation function to limit the subreflector control within the range."""
+    u = u_tmp.copy()
+    if float(u.sel(drive="X")) < range_dX[0]:
+        u.loc[dict(drive="X")] = range_dX[0]
+
+    if float(u.sel(drive="X")) > range_dX[1]:
+        u.loc[dict(drive="X")] = range_dX[1]
+
+    if float(u.sel(drive="Z")) < range_dZ[0]:
+        u.loc[dict(drive="Z")] = range_dZ[0]
+
+    if float(u.sel(drive="Z")) > range_dZ[1]:
+        u.loc[dict(drive="Z")] = range_dZ[1]
+
+    return u

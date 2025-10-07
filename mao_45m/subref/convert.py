@@ -96,12 +96,21 @@ class Converter:
         tc = float(to_timedelta(self.control_period) / SECOND)
 
         if self.last is None:
-            u: xr.DataArray = (
-                (-self.K_I * tc * m - self.K_P * m)
-                .assign_coords(m=m.assign_attrs(units="m"))
-                .assign_attrs(units="m")
-                .rename("u")
-            )
+            if (self.K_I == 0).all():
+                u: xr.DataArray = (
+                    (-self.K_P * m)
+                    .assign_coords(m=m.assign_attrs(units="m"))
+                    .assign_attrs(units="m")
+                    .rename("u")
+                )
+
+            else:
+                u: xr.DataArray = (
+                    (-self.K_I * tc * m - self.K_P * m)
+                    .assign_coords(m=m.assign_attrs(units="m"))
+                    .assign_attrs(units="m")
+                    .rename("u")
+                )
 
             if abs(dX := float(u.sel(drive="X"))) > ABSMAX_DX:
                 LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
@@ -113,12 +122,21 @@ class Converter:
 
             return self.on_success(u)
 
-        u: xr.DataArray = (
-            (self.last - self.K_I * tc * m - self.K_P * (m - self.last.m))
-            .assign_coords(m=m.assign_attrs(units="m"))
-            .assign_attrs(units="m")
-            .rename("u")
-        )
+        if (self.K_I == 0).all():
+            u: xr.DataArray = (
+                (-self.K_P * m)
+                .assign_coords(m=m.assign_attrs(units="m"))
+                .assign_attrs(units="m")
+                .rename("u")
+            )
+
+        else:
+            u: xr.DataArray = (
+                (self.last - self.K_I * tc * m - self.K_P * (m - self.last.m))
+                .assign_coords(m=m.assign_attrs(units="m"))
+                .assign_attrs(units="m")
+                .rename("u")
+            )
         dt = (u.time - self.last.time) / SECOND
 
         if abs(dX := float(u.sel(drive="X"))) > ABSMAX_DX:

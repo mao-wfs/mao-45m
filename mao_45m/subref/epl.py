@@ -1,4 +1,8 @@
-__all__ = ["calc_epl", "get_spectra", "setup_receiver"]
+__all__ = [
+    "calc_epl",
+    "get_spectra",
+    "setup_receiver",
+]
 
 
 # standard library
@@ -9,7 +13,6 @@ from datetime import datetime, timedelta
 from logging import getLogger
 from scipy.optimize import curve_fit
 from struct import Struct
-from threading import Event, Lock, Thread
 from typing import Callable, NamedTuple
 
 
@@ -17,13 +20,15 @@ from typing import Callable, NamedTuple
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
+import multiprocessing
+from multiprocessing import Process, Manager
 from ..vdif.receive import get_socket
 
 
 # constants
 C = 299_792_458  # m/s
 LITTLE_ENDIAN: str = "<"
-LOCK = Lock()
+LOCK = Manager().Lock()
 LOGGER = getLogger(__name__)
 LOWER_FREQ_MHZ = 16384
 N_BYTES_PER_SCAN: int = 1312 * 64
@@ -33,7 +38,7 @@ N_ROWS_CORR_DATA: int = 512
 N_ROWS_CORR_HEAD: int = 64
 N_ROWS_VDIF_HEAD: int = 8
 N_UNITS_PER_SCAN: int = 64
-PACKET_BUFFER = deque(maxlen=6000)
+PACKET_BUFFER = Manager().list()
 REF_EPOCH_ORIGIN = np.datetime64("2000", "Y")
 REF_EPOCH_UNIT = np.timedelta64(6, "M")
 SHORT: str = "h"
@@ -43,7 +48,7 @@ UINT: str = "I"
 
 # global variables
 FEED = ["c", "t", "r", "b", "l"]
-UDP_READY_EVENT = Event()
+UDP_READY_EVENT = multiprocessing.Event()
 
 
 @contextmanager
@@ -59,31 +64,31 @@ def setup_receiver(
         port: Multicast port number.
 
     """
-
+    print("Starting UDP receiver...")
     sock = get_socket(group=group, port=port)
-
-    receiver_thread = Thread(
+    receiver_process = Process(
         target=udp_receiver,
         args=(sock, UDP_READY_EVENT),
         daemon=True,
     )
 
     try:
-        LOGGER.debug("Starting receiver thread...")
-        receiver_thread.start()
+        LOGGER.debug("Starting receiver Process...")
+        receiver_process.start()
         yield
     finally:
-        LOGGER.debug("Finishing receiver thread...")
-        receiver_thread.join(timeout=1.0)
-        sock.close()
+        LOGGER.debug("Stopping receiver Process...")
+        receiver_process.terminate()
+        receiver_process.join(timeout=1.0)
 
 
 def get_spectra(
-    feed_origin: str,
     feed_pattern: Sequence[str],
     freq_range: tuple[float, float],
+    feed_origin: np.datetime64 | str | None = None,
     freq_binning: int = 8,
     size: int = 25,
+    elevation: float = 0.0,
 ) -> xr.DataArray:
     """Get Spectra.
 
@@ -97,13 +102,12 @@ def get_spectra(
 
     feed_origin = datetime.strptime(feed_origin, "%Y%m%dT%H%M%S")  # type: ignore
     COUNT = np.zeros(5, dtype=int)
-    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)  # MHz
+    ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)
     SPECTRA = np.zeros((5, ch), dtype=np.complex128)
     FEED_PATTERN = feed_pattern
-    FREQ = get_freq(freq_binning)  # Hz
+    FREQ = get_freq(freq_binning)
     FREQ_SELECTED = FREQ[(FREQ >= freq_range[0]) & (FREQ <= freq_range[1])]
 
-    UDP_READY_EVENT.clear()
     UDP_READY_EVENT.wait()
     UDP_READY_EVENT.clear()
     scan = get_latest_packets(size)
@@ -130,7 +134,6 @@ def get_spectra(
     LOGGER.debug(
         f"start_time={start_time}, last_time={last_time}, d_time={last_time-start_time}"
     )
-
     return xr.DataArray(
         data=[
             np.array(SPECTRA[0] / COUNT[0]),
@@ -144,11 +147,14 @@ def get_spectra(
             "feed": FEED,
             "freq": FREQ_SELECTED,
             "time": last_time,
+            "elevation": elevation,
         },
     )
 
 
-def calc_epl(spec: xr.DataArray) -> xr.DataArray:
+def calc_epl(
+    spec: xr.DataArray,
+) -> xr.DataArray:  # EL
     freq = spec.coords["freq"].values
 
     epl_dict = {}
@@ -164,13 +170,17 @@ def calc_epl(spec: xr.DataArray) -> xr.DataArray:
             epl_dict["l"],
         ],
         dims="feed",
-        coords={"feed": FEED, "time": spec.coords["time"]},
+        coords={
+            "feed": FEED,
+            "freq": spec.coords["freq"].mean().item(),
+            "time": spec.coords["time"],
+            "elevation": spec.coords["elevation"].item(),
+        },
     )
 
 
-def udp_receiver(sock, udp_ready_event):
+def udp_receiver(sock, udp_ready_event) -> None:
     while True:
-        temp_buffer = []
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
             array = np.frombuffer(
@@ -191,6 +201,7 @@ def udp_receiver(sock, udp_ready_event):
             ch = word_4[16:24]
             if ch == 64:
                 break
+        temp_buffer = []
 
         while True:
             frame, _ = sock.recvfrom(N_BYTES_PER_UNIT)
@@ -210,6 +221,8 @@ def udp_receiver(sock, udp_ready_event):
                     break
                 with LOCK:
                     PACKET_BUFFER.append(list(temp_buffer))
+                    if len(PACKET_BUFFER) > 10000:
+                        del PACKET_BUFFER[0 : len(PACKET_BUFFER) - 5000]
                 temp_buffer.clear()
                 udp_ready_event.set()
 
@@ -273,6 +286,9 @@ def read_head(frame: bytes) -> head_data:
 
 
 def get_latest_packets(a: int) -> list:
+    if PACKET_BUFFER is None or LOCK is None:
+        raise RuntimeError("Receiver not started. Call start_receiver() first.")
+
     with LOCK:
         return list(PACKET_BUFFER)[-a:]
 
@@ -344,19 +360,16 @@ def get_n_from_current_time(start_time: datetime, data_time: datetime) -> int:
 
 
 def get_amp(da: np.ndarray) -> np.ndarray:
-    """複素数DataArrayの絶対値Amplitudeを返す関数"""
     amp = np.abs(da)
     return amp
 
 
 def get_phase(da: np.ndarray) -> np.ndarray:
-    """複素数DataArrayの偏角(ラジアン単位)を返す関数"""
     phase = np.arctan2(da.imag, da.real)
     return phase
 
 
 def line_through_origin(freq: np.ndarray, slope: float) -> np.ndarray:
-    """原点を通る直線モデル"""
     return slope * freq
 
 

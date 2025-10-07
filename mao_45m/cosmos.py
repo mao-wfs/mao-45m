@@ -15,8 +15,8 @@ from typing_extensions import Self
 
 
 # constants
-ABSMAX_DX = 0.118  # m
-ABSMAX_DZ = 0.049  # m
+ABSMAX_DX = 0.048  # m
+ABSMAX_DZ = 0.024  # m
 LOGGER = getLogger(__name__)
 STATE_FORMAT = re.compile(
     r"wind:\s+([0-9.+-]+)\s+"

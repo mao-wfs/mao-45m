@@ -2,17 +2,21 @@ __all__ = ["control"]
 
 
 # standard library
+from collections import deque
 from collections.abc import Sequence
 from logging import getLogger
 from os import PathLike
+from pathlib import Path
 from time import sleep
+from warnings import catch_warnings, simplefilter
 
 
 # dependencies
 import numpy as np
+import xarray as xr
 from ndtools import Range
 from tqdm import tqdm
-from .convert import get_converter as get_subref_converter
+from .convert import get_converter as get_subref_converter, get_epl_offsets
 from ..cosmos import get_cosmos
 
 # from ..epl.convert import get_aggregated, get_converter as get_epl_converter
@@ -20,11 +24,12 @@ from ..vdif import FRAMES_PER_SAMPLE
 from ..vdif.convert import get_samples
 from ..utils import log, take, to_timedelta
 from .epl import calc_epl, get_spectra, setup_receiver
-
+from ..utils import log, take, to_datetime, to_timedelta
 
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
+TIME_UNITS = "microseconds since 2000-01-01T00:00:00"
 
 
 def control(
@@ -42,14 +47,17 @@ def control(
     sample: int = 25,
     # options for the subref control
     dry_run: bool = True,
+    control_duration: np.timedelta64 | str | float = "1 d",
+    control_origin: np.datetime64 | str = "Now UTC",
+    control_period: np.timedelta64 | str | float = "0.5 s",
+    epl_interval_tolerance: float = 0.1,
+    epl_offset_schedule: PathLike[str] | str | None = None,
     integral_gain_dX: float = 0.1,
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
-    Tc: float = 0.5,  # s
-    Tc_tolerance: float = 0.1,
     # options for network connection
     cosmos_host: str = "127.0.0.1",
     cosmos_port: int = 11111,
@@ -58,6 +66,11 @@ def control(
     vdif_port: int = 22222,
     # option for display
     status: bool = True,
+    # options for data saving
+    epl_data: PathLike[str] | str | None = None,
+    epl_data_max: int | None = None,
+    subref_data: PathLike[str] | str | None = None,
+    subref_data_max: int | None = None,
     # options for logging
     log_file: PathLike[str] | str | None = None,
     log_file_level: int | str = "INFO",
@@ -75,12 +88,16 @@ def control(
             LOGGER.debug(f"{key}: {val!r}")
 
         # define the frame size for each EPL estimate
+        dt_control = to_timedelta(control_duration)
         dt_epl = to_timedelta(integ_per_epl)
         dt_sample = to_timedelta(integ_per_sample)
+        epl_size = int(dt_control / dt_epl)
         frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
         # create the EPL and subref converters
         get_subref = get_subref_converter(
+            control_period=control_period,
+            epl_interval_tolerance=epl_interval_tolerance,
             feed_model=feed_model,
             proportional_gain_dX=proportional_gain_dX,
             proportional_gain_dZ=proportional_gain_dZ,
@@ -88,9 +105,13 @@ def control(
             integral_gain_dZ=integral_gain_dZ,
             range_ddX=range_ddX,
             range_ddZ=range_ddZ,
-            Tc=Tc,
-            Tc_tolerance=Tc_tolerance,
         )
+
+        # create the EPL offset schedule
+        if epl_offset_schedule is not None:
+            epl_offsets = get_epl_offsets(epl_offset_schedule)
+        else:
+            epl_offsets = None
 
         with (
             tqdm(disable=not status, unit="EPL") as bar,
@@ -112,12 +133,19 @@ def control(
             )
             last_cal_time = spec_cal.coords["time"].values
 
+            epls = deque(maxlen=epl_data_max)
+            subrefs = deque(maxlen=subref_data_max)
+
+            # start the subref control
+            LOGGER.info("Subreflector control started.")
+            control_origin = to_datetime(control_origin)
+
             try:
                 while True:
                     with take(float(dt_epl / SECOND)):
                         # get the current telescope state
                         state = cosmos.receive_state()
-
+            
                         # get the aggregated data (feed x freq)
                         spec = get_spectra(
                             feed_origin=feed_origin,
@@ -130,6 +158,7 @@ def control(
                             ),
                             elevation=state.elevation,
                         )
+    
                         spec_cal_sum += spec
                         spec_cal_count += 1
                         curr_time = spec.coords["time"].values
@@ -142,15 +171,59 @@ def control(
                         epl_cal = calc_epl(spec_cal)  # type: ignore
                         LOGGER.info(epl)
 
-                        # estimate the current subref parameters
-                        subref = get_subref(epl, epl_cal)
-                        LOGGER.info(subref)
+                        # get the current EPL offset (in m; feed)
+                        if epl_offsets is not None:
+                            epl_offset = epl_offsets.reindex(
+                                time=[to_datetime("Now UTC") - control_origin],
+                                method="ffill",
+                            )[0]
+                        else:
+                            epl_offset = None
 
-                        # send the subref parameters to COSMOS
+                        # estimate the current subref parameters
+                        subref = get_subref(epl, epl_cal, epl_offset=epl_offset)
+
+                        # send the subref control to COSMOS
                         if not dry_run:
-                            cosmos.send_subref(dX=subref.dX, dZ=subref.dZ)
+                            cosmos.send_subref(
+                                dX=float(subref.sel(drive="X")),
+                                dZ=float(subref.sel(drive="Z")),
+                            )
+
+                        # append EPL and/or subref data (optional)
+                        if epl_data is not None:
+                            epls.append(epl)
+
+                        if subref_data is not None:
+                            subrefs.append(subref)
 
                         # update the progress bar
                         bar.update(1)
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
+            finally:
+                # save EPL data (optional)
+                if epl_data is not None:
+                    save_dataarray(xr.concat(epls, dim="time"), epl_data)
+
+                # save subref data (optional)
+                if subref_data is not None:
+                    save_dataarray(xr.concat(subrefs, dim="time"), subref_data)
+
+                # finish the subref control
+                LOGGER.info("Subreflector control finished.")
+
+
+def save_dataarray(da: xr.DataArray, zarr: PathLike[str] | str, /) -> Path:
+    """Save (append) the given DataArray to the given Zarr file."""
+    encoding = {"time": {"units": TIME_UNITS}}
+
+    with catch_warnings():
+        simplefilter("ignore", category=UserWarning)
+
+        if Path(zarr).exists():
+            da.to_zarr(zarr, mode="a", append_dim="time")
+        else:
+            da.to_zarr(zarr, mode="w", encoding=encoding)
+
+    return Path(zarr).expanduser().resolve()

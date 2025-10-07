@@ -16,6 +16,7 @@ import numpy as np
 import xarray as xr
 from ndtools import Range
 from tqdm import tqdm
+import multiprocessing
 from .convert import get_converter as get_subref_converter, get_epl_offsets
 from ..cosmos import get_cosmos
 from ..epl.convert import get_aggregated, get_converter as get_epl_converter
@@ -23,12 +24,14 @@ from ..vdif import FRAMES_PER_SAMPLE
 from ..vdif.convert import get_samples
 from ..vdif.receive import get_frames
 from ..utils import log, take, to_datetime, to_timedelta
+from .epl import calc_epl, get_spectra, setup_receiver
 
 
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
 TIME_UNITS = "microseconds since 2000-01-01T00:00:00"
+UDP_READY_EVENT = multiprocessing.Event()
 
 
 def control(
@@ -93,7 +96,7 @@ def control(
         frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
         # create the EPL and subref converters
-        get_epl = get_epl_converter(cal_interval)
+        # get_epl = get_epl_converter(cal_interval)
         get_subref = get_subref_converter(
             control_period=control_period,
             epl_interval_tolerance=epl_interval_tolerance,
@@ -116,10 +119,10 @@ def control(
             tqdm(disable=not status, unit="EPL") as bar,
             get_cosmos(host=cosmos_host, port=cosmos_port, safe=cosmos_safe) as cosmos,
             get_frames(frame_size * 2, group=vdif_group, port=vdif_port) as frames,
+            setup_receiver(group=vdif_group, port=vdif_port),
         ):
-            # wait until enough frames are buffered
-            while len(frames.get(frame_size)) != frame_size:
-                sleep(dt_epl / SECOND)
+
+            sleep(1)
 
             epls = deque(maxlen=epl_data_max)
             subrefs = deque(maxlen=subref_data_max)
@@ -135,21 +138,20 @@ def control(
                         state = cosmos.receive_state()
 
                         # get the current VDIF samples (time x chan)
-                        frames_ = frames.get(frame_size + FRAMES_PER_SAMPLE)
-                        samples = get_samples(frames_)
 
                         # get the aggregated data (feed x freq)
-                        aggregated = get_aggregated(
-                            samples,
-                            elevation=state.elevation,
-                            feed_pattern=feed_pattern,
+                        aggregated = get_spectra(
                             feed_origin=feed_origin,
+                            feed_pattern=feed_pattern,
+                            freq_range=freq_range,
                             freq_binning=freq_binning,
-                            freq_range=Range(*freq_range),
+                            size=25,
+                            elevation=state.elevation,
                         )
 
                         # estimate the EPL (in m; feed)
-                        epl, epl_cal = get_epl(aggregated)
+                        epl = calc_epl(aggregated)
+                        epl_cal = calc_epl(aggregated / aggregated)
 
                         # get the current EPL offset (in m; feed)
                         if epl_offsets is not None:

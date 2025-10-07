@@ -88,6 +88,7 @@ def get_spectra(
     freq_range: tuple[float, float],
     freq_binning: int = 8,
     size: int = 25,
+    elevation: float = 0.0,
 ) -> xr.DataArray:
     """Get Spectra.
 
@@ -146,11 +147,14 @@ def get_spectra(
             "feed": FEED,
             "freq": FREQ_SELECTED,
             "time": last_time,
+            "elevation": elevation,
         },
     )
 
 
-def calc_epl(spec: xr.DataArray) -> xr.DataArray:
+def calc_epl(
+    spec: xr.DataArray,
+) -> xr.DataArray:  # EL
     freq = spec.coords["freq"].values
 
     epl_dict = {}
@@ -166,7 +170,12 @@ def calc_epl(spec: xr.DataArray) -> xr.DataArray:
             epl_dict["l"],
         ],
         dims="feed",
-        coords={"feed": FEED, "time": spec.coords["time"]},
+        coords={
+            "feed": FEED,
+            "freq": spec.coords["freq"].mean().item(),
+            "time": spec.coords["time"],
+            "elevation": spec.coords["elevation"].item(),
+        },
     )
 
 

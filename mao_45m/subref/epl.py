@@ -83,9 +83,9 @@ def setup_receiver(
 
 
 def get_spectra(
-    feed_origin: str,
     feed_pattern: Sequence[str],
     freq_range: tuple[float, float],
+    feed_origin: np.datetime64 | str | None = None,
     freq_binning: int = 8,
     size: int = 25,
     elevation: float = 0.0,

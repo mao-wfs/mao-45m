@@ -14,11 +14,12 @@ from ndtools import Range
 from tqdm import tqdm
 from .convert import get_converter as get_subref_converter
 from ..cosmos import get_cosmos
-from ..epl.convert import get_aggregated, get_converter as get_epl_converter
+
+# from ..epl.convert import get_aggregated, get_converter as get_epl_converter
 from ..vdif import FRAMES_PER_SAMPLE
 from ..vdif.convert import get_samples
-from ..vdif.receive import get_frames
 from ..utils import log, take, to_timedelta
+from .epl import calc_epl, get_spectra, setup_receiver
 
 
 # constants
@@ -38,6 +39,7 @@ def control(
     freq_range: tuple[float, float] = (19.5e9, 22.5e9),  # Hz
     integ_per_sample: np.timedelta64 | str | float = "0.01 s",
     integ_per_epl: np.timedelta64 | str | float = "0.5 s",
+    sample: int = 25,
     # options for the subref control
     dry_run: bool = True,
     integral_gain_dX: float = 0.1,
@@ -78,7 +80,6 @@ def control(
         frame_size = FRAMES_PER_SAMPLE * int(dt_epl / dt_sample)
 
         # create the EPL and subref converters
-        get_epl = get_epl_converter(cal_interval)
         get_subref = get_subref_converter(
             feed_model=feed_model,
             proportional_gain_dX=proportional_gain_dX,
@@ -94,35 +95,51 @@ def control(
         with (
             tqdm(disable=not status, unit="EPL") as bar,
             get_cosmos(host=cosmos_host, port=cosmos_port, safe=cosmos_safe) as cosmos,
-            get_frames(frame_size * 2, group=vdif_group, port=vdif_port) as frames,
+            setup_receiver(group=vdif_group, port=vdif_port),
         ):
-            # wait until enough frames are buffered
-            while len(frames.get(frame_size)) != frame_size:
-                sleep(dt_epl / SECOND)
+            sleep(float(cal_interval))
+            ch = int((freq_range[1] - freq_range[0]) * 1e-6 / freq_binning)
+            spec_cal_sum = np.zeros((5, ch), dtype=np.complex128)
+            spec_cal_count = 0
+            state0 = cosmos.receive_state()
+            spec_cal = get_spectra(
+                feed_origin=feed_origin,
+                feed_pattern=feed_pattern,
+                freq_range=freq_range,
+                freq_binning=freq_binning,
+                size=int(to_timedelta(cal_interval) / to_timedelta(integ_per_sample)),
+                elevation=state0.elevation,
+            )
+            last_cal_time = spec_cal.coords["time"].values
 
             try:
                 while True:
-                    with take(dt_epl / SECOND):
+                    with take(float(dt_epl / SECOND)):
                         # get the current telescope state
                         state = cosmos.receive_state()
 
-                        # get the current VDIF samples (time x chan)
-                        samples = get_samples(
-                            frames.get(frame_size + FRAMES_PER_SAMPLE)
-                        )
-
                         # get the aggregated data (feed x freq)
-                        aggregated = get_aggregated(
-                            samples,
-                            elevation=state.elevation,
-                            feed_pattern=feed_pattern,
+                        spec = get_spectra(
                             feed_origin=feed_origin,
+                            feed_pattern=feed_pattern,
+                            freq_range=freq_range,
                             freq_binning=freq_binning,
-                            freq_range=Range(*freq_range),
+                            size=int(
+                                float(dt_epl / SECOND)
+                                / float(to_timedelta(integ_per_sample))
+                            ),
+                            elevation=state.elevation,
                         )
-
-                        # estimate the EPL (in m; feed)
-                        epl, epl_cal = get_epl(aggregated)
+                        spec_cal_sum += spec
+                        spec_cal_count += 1
+                        curr_time = spec.coords["time"].values
+                        if (curr_time - last_cal_time) > to_timedelta(cal_interval):
+                            spec_cal = (spec_cal_sum / spec_cal_count)
+                            spec_cal_sum = np.zeros((5, ch), dtype=np.complex128)
+                            spec_cal_count = 0
+                            last_cal_time = curr_time
+                        epl = calc_epl(spec / spec_cal)
+                        epl_cal = calc_epl(spec_cal)  # type: ignore
                         LOGGER.info(epl)
 
                         # estimate the current subref parameters

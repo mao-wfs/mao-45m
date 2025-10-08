@@ -65,6 +65,8 @@ def control(
     # option for display
     status: bool = True,
     # options for data saving
+    aggregated_data: PathLike[str] | str | None = None,
+    aggregated_data_max: int | None = None,
     epl_data: PathLike[str] | str | None = None,
     epl_data_max: int | None = None,
     subref_data: PathLike[str] | str | None = None,
@@ -122,6 +124,7 @@ def control(
                 sleep(dt_epl / SECOND)
 
             epls = deque(maxlen=epl_data_max)
+            aggs = deque(maxlen=aggregated_data_max)
             subrefs = deque(maxlen=subref_data_max)
 
             # start the subref control
@@ -170,7 +173,10 @@ def control(
                                 dZ=float(subref.sel(drive="Z")),
                             )
 
-                        # append EPL and/or subref data (optional)
+                        # append aggregated, EPL, subref data (optional)
+                        if aggregated_data is not None:
+                            aggs.append(aggregated)
+
                         if epl_data is not None:
                             epls.append(epl)
 
@@ -182,6 +188,10 @@ def control(
             except KeyboardInterrupt:
                 LOGGER.warning("Control interrupted by user.")
             finally:
+                # save aggregated data (optional)
+                if aggregated_data is not None:
+                    save_dataarray(xr.concat(aggs, dim="time"), aggregated_data)
+
                 # save EPL data (optional)
                 if epl_data is not None:
                     save_dataarray(xr.concat(epls, dim="time"), epl_data)

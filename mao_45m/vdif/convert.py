@@ -121,7 +121,6 @@ def get_samples(frames: list[bytes], /) -> xr.DataArray:
         .rename(temp="chan")
         .sortby("time")
         .sortby("chan")
-        .dropna("time")
     )
 
 
@@ -172,7 +171,6 @@ def get_samples_faster(frames: list[bytes], /) -> xr.DataArray:
         .rename(temp="chan")
         .sortby("time")
         .sortby("chan")
-        .dropna("time")
     )
 
 

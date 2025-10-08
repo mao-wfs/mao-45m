@@ -272,8 +272,8 @@ def get_converter(
     integral_gain_dZ: float = 0.1,
     proportional_gain_dX: float = 0.1,
     proportional_gain_dZ: float = 0.1,
-    anti_windup_gain_gain_dX: float = 10,
-    anti_windup_gain_gain_dZ: float = 10,
+    anti_windup_gain_dX: float = 10,
+    anti_windup_gain_dZ: float = 10,
     range_dX: tuple[float, float] = (-0.038, 0.038),  # m
     range_dZ: tuple[float, float] = (-0.019, 0.019),  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
@@ -290,8 +290,8 @@ def get_converter(
         integral_gain_dZ: Integral gain for the estimated dZ.
         proportional_gain_dX: Proportional gain for the estimated dX.
         proportional_gain_dZ: Proportional gain for the estimated dZ.
-        anti_windup_gain_gain_dX: Anti-windup gain for the estimated dX.
-        anti_windup_gain_gain_dZ: Anti-windup gain for the estimated dZ.
+        anti_windup_gain_dX: Anti-windup gain for the estimated dX.
+        anti_windup_gain_dZ: Anti-windup gain for the estimated dZ.
         range_dX: Absolute range for dX (in m).
         range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
@@ -306,7 +306,7 @@ def get_converter(
         M=get_measurement_matrix(feed_model),
         K_I=get_integral_gain(integral_gain_dX, integral_gain_dZ),
         K_P=get_proportional_gain(proportional_gain_dX, proportional_gain_dZ),
-        K_a=get_anti_windup_gain(anti_windup_gain_gain_dX, anti_windup_gain_gain_dZ),
+        K_a=get_anti_windup_gain(anti_windup_gain_dX, anti_windup_gain_dZ),
         control_period=control_period,
         epl_interval_tolerance=epl_interval_tolerance,
         range_dX=range_dX,

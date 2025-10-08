@@ -20,7 +20,7 @@ from .convert import get_converter as get_subref_converter, get_epl_offsets
 from ..cosmos import get_cosmos
 from ..epl.convert import get_aggregated, get_converter as get_epl_converter
 from ..vdif import FRAMES_PER_SAMPLE
-from ..vdif.convert import get_samples
+from ..vdif.convert import get_samples_faster as get_samples
 from ..vdif.receive import get_frames
 from ..utils import log, take, to_datetime, to_timedelta
 

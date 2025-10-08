@@ -24,7 +24,13 @@ import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
 from typing_extensions import Self
-from . import CHANS_PER_FRAME, CORR_DATA_BYTES, FRAMES_PER_SAMPLE, VDIF_HEAD_BYTES
+from . import (
+    CHANS_PER_FRAME,
+    CORR_DATA_BYTES,
+    FRAME_BYTES,
+    FRAMES_PER_SAMPLE,
+    VDIF_HEAD_BYTES,
+)
 
 
 @dataclass(frozen=True)
@@ -115,7 +121,56 @@ def get_samples(frames: list[bytes], /) -> xr.DataArray:
         .rename(temp="chan")
         .sortby("time")
         .sortby("chan")
-        .dropna("time")
+    )
+
+
+def get_samples_faster(frames: list[bytes], /) -> xr.DataArray:
+    """Get VDIF samples (time x chan) from VDIF frames (faster)."""
+    shape = len(frames), FRAME_BYTES
+    array = np.frombuffer(b"".join(frames), np.uint8).reshape(shape)
+    vdif_head = array[:, :VDIF_HEAD_BYTES].view("<u4")
+    corr_data = array[:, -CORR_DATA_BYTES:].view("<i2")
+
+    word_0 = Word(vdif_head[:, 0])  # type: ignore
+    word_1 = Word(vdif_head[:, 1])  # type: ignore
+    word_4 = Word(vdif_head[:, 4])  # type: ignore
+    channel_number: NDArray[np.uint32] = word_4[16:24]  # type: ignore
+    elapsed_seconds: NDArray[np.uint32] = word_0[0:30]  # type: ignore
+    frame_number: NDArray[np.uint32] = word_1[0:24]  # type: ignore
+    ip_length: NDArray[np.uint32] = word_4[0:8]  # type: ignore
+    reference_epoch: NDArray[np.uint32] = word_1[24:30]  # type: ignore
+
+    da = (
+        xr.DataArray(
+            corr_data[:, 0::2] + corr_data[:, 1::2] * 1j,
+            dims=("time", "chan"),
+            coords={
+                "chan": np.arange(CHANS_PER_FRAME),
+                "id": ("time", channel_number),
+                "time": (
+                    np.datetime64("2000")
+                    + np.timedelta64(1, "M") * (6 * reference_epoch)
+                    + np.timedelta64(1, "s") * elapsed_seconds
+                    + np.timedelta64(1, "ms")
+                    * ((frame_number // FRAMES_PER_SAMPLE) * ip_length)
+                    + np.timedelta64(0, "ns")
+                ),
+            },
+            attrs={
+                "ip_length": get_ip_length(frames[0]),
+            },
+        )
+        .set_index(temp=("id", "time"))
+        .unstack("temp")
+        .stack(temp=("chan", "id"), create_index=False)
+    )
+
+    return (
+        da.assign_coords(temp=CHANS_PER_FRAME * (da.id - 1) + da.chan)
+        .drop_vars(("chan", "id"))
+        .rename(temp="chan")
+        .sortby("time")
+        .sortby("chan")
     )
 
 

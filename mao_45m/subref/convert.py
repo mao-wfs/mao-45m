@@ -96,7 +96,7 @@ class Converter:
             epl
             - epl_cal.data
             - self.G.interp(elevation=epl.elevation.data)
-            + self.G.interp(elevation=epl_cal.elevation.data)
+            + self.G.interp(elevation=epl_cal.elevation.data).drop_vars("elevation")
         )
 
         LOGGER.info(
@@ -174,7 +174,14 @@ class Converter:
 
         else:  # PI control with anti-windup
             v: xr.DataArray = (
-                self.last.v - tc * m - tc * self.K_a * (self.last - self.last.u_tmp)
+                self.last.v.drop_vars(["time", "elevation"])
+                - tc * m
+                + tc
+                * self.K_a
+                * (
+                    self.last.drop_vars(["time", "elevation"])
+                    - self.last.u_tmp.drop_vars(["time", "elevation"])
+                )
             )
             u_tmp = self.K_I * v - self.K_P * m
             u: xr.DataArray = (

@@ -33,13 +33,13 @@ SECOND = np.timedelta64(1, "s")
 
 @dataclass
 class Converter:
-    """EPL-to-subref control converter for the Nobeyama 45m telescope..
+    """EPL-to-subref control converter for the Nobeyama 45m telescope.
 
     Args:
         G: Homologous EPL (G; feed x elevation; in m).
-        K_I: Integral gain (K_I; feed).
-        K_P: Proportional gain (K_I; feed).
-        K_a: Anti-windup gain (K_a; feed).
+        K_I: Integral gain (K_I; drive).
+        K_P: Proportional gain (K_P; drive).
+        K_a: Anti-windup gain (K_a; drive).
         M: Measurement matrix (M; feed x drive).
         control_period: Control period (float in s or string with units).
         epl_interval_tolerance: Acceptable fraction of EPL time interval
@@ -96,7 +96,7 @@ class Converter:
             epl
             - epl_cal.data
             - self.G.interp(elevation=epl.elevation.data)
-            + self.G.interp(elevation=epl_cal.elevation.data)
+            + self.G.interp(elevation=epl_cal.elevation.data).drop_vars("elevation")
         )
 
         LOGGER.info(
@@ -174,7 +174,14 @@ class Converter:
 
         else:  # PI control with anti-windup
             v: xr.DataArray = (
-                self.last.v - tc * m - tc * self.K_a * (self.last - self.last.u_tmp)
+                self.last.v.drop_vars(["time", "elevation"])
+                - tc * m
+                + tc
+                * self.K_a
+                * (
+                    self.last.drop_vars(["time", "elevation"])
+                    - self.last.u_tmp.drop_vars(["time", "elevation"])
+                )
             )
             u_tmp = self.K_I * v - self.K_P * m
             u: xr.DataArray = (
@@ -378,7 +385,7 @@ def get_homologous_epl(
 
 
 def get_integral_gain(dX: float, dZ: float, /) -> xr.DataArray:
-    """Get the integral gain (K_I; feed) from given values."""
+    """Get the integral gain (K_I; drive) from given values."""
     return xr.DataArray(
         data=[dX, dZ],
         dims="drive",
@@ -416,7 +423,7 @@ def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> xr.DataArray:
 
 
 def get_proportional_gain(dX: float, dZ: float, /) -> xr.DataArray:
-    """Get the proportional gain (K_P; feed) from given values."""
+    """Get the proportional gain (K_P; drive) from given values."""
     return xr.DataArray(
         data=[dX, dZ],
         dims="drive",
@@ -426,7 +433,7 @@ def get_proportional_gain(dX: float, dZ: float, /) -> xr.DataArray:
 
 
 def get_anti_windup_gain(dX: float, dZ: float, /) -> xr.DataArray:
-    """Get the anti-windup gain (K_a; feed) from given values."""
+    """Get the anti-windup gain (K_a; drive) from given values."""
     return xr.DataArray(
         data=[dX, dZ],
         dims="drive",

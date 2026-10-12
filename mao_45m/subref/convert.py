@@ -39,11 +39,12 @@ CONTROLLER = Literal["AWPI", "P-AWPI", "M-PAWPI", "D-PAWPI"]
 class ControllerState:
     """State of the subreflector controller.
 
-    Args:  
+    Args:
         epl: EPL (feed; in m).
         time: Time of the EPL.
         epl_cal: EPL at calibration (feed; in m).
         cal_time: Time of the EPL at calibration.
+        w: Artificial disturbance (feed; in m).
         q: Estimated residual (q; feed; in m).
         r: Projected estimated residual (r; feed; in m).
         xi: Estimated actuation coefficient (xi; drive; in m).
@@ -51,13 +52,14 @@ class ControllerState:
         p: Drive amount, measured for D-PAWPI or estimated for M-PAWPI (p; drive; in m).
         d: Estimated suppressible disturbance source (d; drive; in m).
         v: Integrator variable (v; drive; in m s).
-    
+
     """
 
     epl: np.ndarray | None
     time: np.datetime64 | None
     epl_cal: np.ndarray | None
     cal_time: np.datetime64 | None
+    w: np.ndarray | None
     q: np.ndarray | None
     r: np.ndarray | None
     xi: np.ndarray | None
@@ -170,7 +172,8 @@ class Converter:
         )
 
         if epl_offset is not None:
-            q = q + epl_offset.sel(feed=FEED_ORDER).drop_vars("time").to_numpy()
+            w = epl_offset.sel(feed=FEED_ORDER).drop_vars("time").to_numpy()
+            q = q + w
 
             LOGGER.info(
                 "Offset".ljust(10)
@@ -179,6 +182,9 @@ class Converter:
                     for feed in epl_offset.feed.data
                 )
             )
+
+        else:
+            w = np.zeros(q.shape)
 
         r = self.P @ q
 
@@ -218,6 +224,7 @@ class Converter:
             time=epl.time.data,
             epl_cal=epl_cal.sel(feed=FEED_ORDER).to_numpy(),
             cal_time=epl_cal.time.data,
+            w=w,
             q=q,
             r=r,
             xi=xi,
@@ -351,7 +358,8 @@ def get_converter(
         epl=None,
         time=None,
         epl_cal=None,
-        cal_time=None, 
+        cal_time=None,
+        w=None,
         q=None,
         r=None,
         xi=None,

@@ -1,22 +1,25 @@
 __all__ = [
     "Converter",
+    "get_anti_windup_gain",
     "get_converter",
     "get_epl_offsets",
     "get_homologous_epl",
     "get_integral_gain",
     "get_measurement_matrix",
     "get_proportional_gain",
-    "get_anti_windup_gain",
+    "get_projection_matrix",
+    "get_time_constant",
+    "interp_homologous_epl",
     "saturate_subref_control",
 ]
 
 
 # standard library
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from logging import getLogger
 from os import PathLike
-
+from typing import get_args, Literal
 
 # dependencies
 import numpy as np
@@ -25,10 +28,43 @@ import xarray as xr
 from ..cosmos import ABSMAX_DX, ABSMAX_DZ
 from ..utils import to_timedelta
 
-
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
+FEED_ORDER = ["B", "C", "L", "R", "T"]  # alphabetical order
+CONTROLLER = Literal["AWPI", "P-AWPI", "M-PAWPI", "D-PAWPI"]
+
+
+@dataclass
+class ControllerState:
+    """State of the subreflector controller.
+
+    Args:  
+        epl: EPL (feed; in m).
+        time: Time of the EPL.
+        epl_cal: EPL at calibration (feed; in m).
+        cal_time: Time of the EPL at calibration.
+        q: Estimated residual (q; feed; in m).
+        r: Projected estimated residual (r; feed; in m).
+        xi: Estimated actuation coefficient (xi; drive; in m).
+        u: Drive command (u; drive; in m).
+        p: Drive amount, measured for D-PAWPI or estimated for M-PAWPI (p; drive; in m).
+        d: Estimated suppressible disturbance source (d; drive; in m).
+        v: Integrator variable (v; drive; in m s).
+    
+    """
+
+    epl: np.ndarray | None
+    time: np.datetime64 | None
+    epl_cal: np.ndarray | None
+    cal_time: np.datetime64 | None
+    q: np.ndarray | None
+    r: np.ndarray | None
+    xi: np.ndarray | None
+    u: np.ndarray
+    p: np.ndarray
+    d: np.ndarray
+    v: np.ndarray
 
 
 @dataclass
@@ -37,10 +73,14 @@ class Converter:
 
     Args:
         G: Homologous EPL (G; feed x elevation; in m).
+        G_elevation: Elevations of the homologous EPL (elevation; in deg).
+        M: Measurement matrix (M; feed x drive).
+        P: Projection matrix (P; feed x feed).
         K_I: Integral gain (K_I; drive).
         K_P: Proportional gain (K_P; drive).
         K_a: Anti-windup gain (K_a; drive).
-        M: Measurement matrix (M; feed x drive).
+        T_s: Time constant (T_s; drive; in s).
+        last: Last estimated subreflector parameters.
         control_period: Control period (float in s or string with units).
         epl_interval_tolerance: Acceptable fraction of EPL time interval
             relative to the control period (0.1 means +/- 10% allowance).
@@ -48,28 +88,36 @@ class Converter:
         range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        last: Last estimated subreflector parameters.
+        controller: Type of controller to use. Options are "AWPI", "P-AWPI", "M-PAWPI", and "D-PAWPI".
 
     """
 
-    G: xr.DataArray
-    M: xr.DataArray
-    K_I: xr.DataArray
-    K_P: xr.DataArray
-    K_a: xr.DataArray
+    G: np.ndarray
+    G_elevation: np.ndarray
+    M: np.ndarray
+    P: np.ndarray
+    K_I: np.ndarray
+    K_P: np.ndarray
+    K_a: np.ndarray
+    T_s: np.ndarray
+    last: ControllerState
     control_period: np.timedelta64 | str | float = "0.5 s"
     epl_interval_tolerance: float = 0.1
     range_dX: tuple[float, float] = (-0.038, 0.038)  # m
     range_dZ: tuple[float, float] = (-0.019, 0.019)  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
-    last: xr.DataArray | None = None
+    controller: CONTROLLER = "AWPI"
+
+    def __post_init__(self):
+        if self.controller not in get_args(CONTROLLER):
+            raise ValueError(f"{self.controller} is not in {get_args(CONTROLLER)}")
 
     @cached_property
-    def inv_MTM_MT(self) -> xr.DataArray:
-        """Pre-calculated (M^T M)^-1 M^T (drive x feed)."""
-        M_ = self.M.rename(drive="drive_")
-        return get_inv(M_ @ self.M) @ M_.T
+    def inv_PMTPM_PMT(self) -> np.ndarray:
+        """Pre-calculated (PM^T PM)^-1 PM^T (drive x feed)."""
+        PM = self.P @ self.M
+        return np.linalg.inv(PM.T @ PM) @ PM.T
 
     def __call__(
         self,
@@ -78,7 +126,9 @@ class Converter:
         /,
         *,
         epl_offset: xr.DataArray | None,
-    ) -> xr.DataArray:
+        drive_amount_dX: float,
+        drive_amount_dZ: float,
+    ) -> ControllerState:
         """Convert EPL to subreflector control (u; drive; in m).
 
         Args:
@@ -87,16 +137,21 @@ class Converter:
             epl_cal: EPL at calibration (feed; in m; must be zero)
                 with the telescope state information at that time.
             epl_offset: EPL offset to be added to the EPL (feed; in m).
+            drive_amount_dX: Drive amount in the X direction (drive; in m).
+            drive_amount_dZ: Drive amount in the Z direction (drive; in m).
 
         Returns:
             Estimated subreflector control.
 
         """
-        depl: xr.DataArray = (
-            epl
-            - epl_cal.data
-            - self.G.interp(elevation=epl.elevation.data)
-            + self.G.interp(elevation=epl_cal.elevation.data).drop_vars("elevation")
+
+        tc = float(to_timedelta(self.control_period) / SECOND)
+
+        q = (
+            epl.sel(feed=FEED_ORDER).to_numpy()
+            - epl_cal.sel(feed=FEED_ORDER).to_numpy()
+            - interp_homologous_epl(self.G, self.G_elevation, float(epl.elevation))
+            + interp_homologous_epl(self.G, self.G_elevation, float(epl_cal.elevation))
         )
 
         LOGGER.info(
@@ -109,15 +164,13 @@ class Converter:
         LOGGER.info(
             "Corrected".ljust(10)
             + ", ".join(
-                f"EPL({feed})={1e3 * depl.sel(feed=feed):+.3f}mm"
-                for feed in depl.feed.data
+                f"EPL({feed})={1e3 * q[i]:+.3f}mm"
+                for feed, i in zip(FEED_ORDER, range(len(q)))
             )
         )
 
-        if epl_offset is None:
-            m = self.inv_MTM_MT @ depl
-        else:
-            m = self.inv_MTM_MT @ (depl + epl_offset.drop_vars("time"))
+        if epl_offset is not None:
+            q = q + epl_offset.sel(feed=FEED_ORDER).drop_vars("time").to_numpy()
 
             LOGGER.info(
                 "Offset".ljust(10)
@@ -127,145 +180,124 @@ class Converter:
                 )
             )
 
-        tc = float(to_timedelta(self.control_period) / SECOND)
+        r = self.P @ q
 
-        if self.last is None:
-            if (self.K_I == 0).all():  # P control
-                u: xr.DataArray = (
-                    (-self.K_P * m)
-                    .assign_coords(m=m.assign_attrs(units="m"))
-                    .assign_attrs(units="m")
-                    .rename("u")
-                )
+        xi = self.inv_PMTPM_PMT @ r
 
-            else:  # PI control with anti-windup
-                v: xr.DataArray = -tc * m
-                u_tmp: xr.DataArray = self.K_I * v - self.K_P * m
-                u: xr.DataArray = (
-                    (saturate_subref_control(u_tmp, self.range_dX, self.range_dZ))
-                    .assign_coords(
-                        {
-                            "m": m.assign_attrs(units="m"),
-                            "v": v.assign_attrs(units="m*s"),
-                            "u_tmp": u_tmp.assign_attrs(units="m"),
-                        }
-                    )
-                    .assign_attrs(units="m")
-                    .rename("u")
-                )
+        u_tmp = -self.K_I * self.last.v - self.K_P * xi
 
-            if abs(dX := float(u.sel(drive="X"))) > ABSMAX_DX:
+        if self.controller == "D-PAWPI":
+            p = np.array([drive_amount_dX, drive_amount_dZ])
+            d = xi - p
+        elif self.controller == "M-PAWPI":
+            d = xi - self.last.p
+        else:
+            d = self.last.d
+            p = self.last.p
+
+        u = saturate_subref_control(
+            saturate_subref_control(u_tmp, self.range_dX, self.range_dZ) - d,
+            self.range_dX,
+            self.range_dZ,
+        )
+
+        if (self.K_I == 0).all():
+            v = self.last.v
+        else:
+            v = self.last.v + tc * (
+                xi
+                + self.K_a
+                * (u_tmp - saturate_subref_control(u_tmp, self.range_dX, self.range_dZ))
+            )
+
+        if self.controller == "M-PAWPI":
+            p = self.last.p + tc / self.T_s * (-self.last.p + u)
+
+        current = ControllerState(
+            epl=epl.sel(feed=FEED_ORDER).to_numpy(),
+            time=epl.time.data,
+            epl_cal=epl_cal.sel(feed=FEED_ORDER).to_numpy(),
+            cal_time=epl_cal.time.data,
+            q=q,
+            r=r,
+            xi=xi,
+            u=u,
+            p=p,
+            d=d,
+            v=v,
+        )
+
+        if self.last.time is None:
+            if abs(dX := current.u[0]) > ABSMAX_DX:
                 LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
-                return self.on_failure(u)
+                return self.on_failure(current)
 
-            if abs(dZ := float(u.sel(drive="Z"))) > ABSMAX_DZ:
+            if abs(dZ := current.u[1]) > ABSMAX_DZ:
                 LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
-                return self.on_failure(u)
+                return self.on_failure(current)
 
-            return self.on_success(u)
+            return self.on_success(current)
 
-        if (self.K_I == 0).all():  # P control
-            u: xr.DataArray = (
-                (-self.K_P * m)
-                .assign_coords(m=m.assign_attrs(units="m"))
-                .assign_attrs(units="m")
-                .rename("u")
-            )
+        dt = (current.time - self.last.time) / SECOND
 
-        else:  # PI control with anti-windup
-            v: xr.DataArray = (
-                self.last.v.drop_vars(["time", "elevation"])
-                - tc * m
-                + tc
-                * self.K_a
-                * (
-                    self.last.drop_vars(["time", "elevation"])
-                    - self.last.u_tmp.drop_vars(["time", "elevation"])
-                )
-            )
-            u_tmp = self.K_I * v - self.K_P * m
-            u: xr.DataArray = (
-                (saturate_subref_control(u_tmp, self.range_dX, self.range_dZ))
-                .assign_coords(
-                    {
-                        "m": m.assign_attrs(units="m"),
-                        "v": v.assign_attrs(units="m*s"),
-                        "u_tmp": u_tmp.assign_attrs(units="m"),
-                    }
-                )
-                .assign_attrs(units="m")
-                .rename("u")
-            )
-        dt = (u.time - self.last.time) / SECOND
-
-        if abs(dX := float(u.sel(drive="X"))) > ABSMAX_DX:
+        if abs(dX := current.u[0]) > ABSMAX_DX:
             LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
-        if abs(dZ := float(u.sel(drive="Z"))) > ABSMAX_DZ:
+        if abs(dZ := current.u[1]) > ABSMAX_DZ:
             LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
-        if abs(ddX := dX - float(self.last.sel(drive="X"))) < self.range_ddX[0]:
+        if abs(ddX := dX - self.last.u[0]) < self.range_ddX[0]:
             LOGGER.warning(f"{ddX=} is out of range (|ddX| >= {self.range_ddX[0]}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
         if abs(ddX) > self.range_ddX[1]:
             LOGGER.warning(f"{ddX=} is out of range (|ddX| <= {self.range_ddX[1]}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
-        if abs(ddZ := dZ - float(self.last.sel(drive="Z"))) < self.range_ddZ[0]:
+        if abs(ddZ := dZ - self.last.u[1]) < self.range_ddZ[0]:
             LOGGER.warning(f"{ddZ=} is out of range (|ddZ| >= {self.range_ddZ[0]}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
         if abs(ddZ) > self.range_ddZ[1]:
             LOGGER.warning(f"{ddZ=} is out of range (|ddZ| <= {self.range_ddZ[1]}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
         if dt < (dt_min := tc * (1 - self.epl_interval_tolerance)):
             LOGGER.warning(f"{dt=} is out of range (dt >= {dt_min}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
         if dt > (dt_max := tc * (1 + self.epl_interval_tolerance)):
             LOGGER.warning(f"{dt=} is out of range (dt <= {dt_max}).")
-            return self.on_failure(u)
+            return self.on_failure(current)
 
-        return self.on_success(u)
+        return self.on_success(current)
 
-    def on_success(self, current: xr.DataArray, /) -> xr.DataArray:
+    def on_success(self, current: ControllerState, /) -> ControllerState:
         """Replace the last subreflector control with current one."""
         LOGGER.info(
             ", ".join(
-                f"u({drive})={1e3 * current.sel(drive=drive):+.3f}mm"
-                for drive in current.drive.data
+                f"u[{i}]={1e3 * current.u[i]:+.3f}mm" for i in range(len(current.u))
             )
         )
         LOGGER.info(
             ", ".join(
-                f"m({drive})={1e3 * current.m.sel(drive=drive):+.3f}mm"
-                for drive in current.drive.data
+                f"xi[{i}]={1e3 * current.xi[i]:+.3f}mm" for i in range(len(current.xi))
             )
         )
         self.last = current
         return current
 
-    def on_failure(self, current: xr.DataArray, /) -> xr.DataArray:
+    def on_failure(self, current: ControllerState, /) -> ControllerState:
         """Replace the last subreflector control's time with current one."""
-        if self.last is None:
-            if (self.K_I == 0).all():  # P control
-                m_zero = xr.zeros_like(current.m)
-                u_zero = xr.zeros_like(current)
-                self.last = u_zero.assign_coords(m=m_zero)
-            else:  # PI control with anti-windup
-                m_zero = xr.zeros_like(current.m)
-                v_zero = xr.zeros_like(current.v)
-                u_tmp_zero = xr.zeros_like(current.u_tmp)
-                u_zero = xr.zeros_like(current)
-                self.last = u_zero.assign_coords(
-                    {"m": m_zero, "v": v_zero, "u_tmp": u_tmp_zero}
-                )
+        if self.last.time is None:
+            v_zero = np.zeros_like(current.v)
+            p_zero = np.zeros_like(current.p)
+            u_zero = np.zeros_like(current.u)
+            self.last = replace(current, v=v_zero, p=p_zero, u=u_zero)
         else:
-            self.last = self.last.assign_coords(time=current.time)
+            self.last = replace(self.last, time=current.time)
 
         return self.last
 
@@ -281,10 +313,13 @@ def get_converter(
     proportional_gain_dZ: float = 0.1,
     anti_windup_gain_dX: float = 10,
     anti_windup_gain_dZ: float = 10,
+    time_constant_dX: float = 0.2,
+    time_constant_dZ: float = 0.2,
     range_dX: tuple[float, float] = (-0.038, 0.038),  # m
     range_dZ: tuple[float, float] = (-0.019, 0.019),  # m
     range_ddX: tuple[float, float] = (0.00005, 0.000375),  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300),  # m
+    controller: CONTROLLER = "AWPI",
 ) -> Converter:
     """Get an EPL-to-subref control converter for the Nobeyama 45m telescope.
 
@@ -299,28 +334,58 @@ def get_converter(
         proportional_gain_dZ: Proportional gain for the estimated dZ.
         anti_windup_gain_dX: Anti-windup gain for the estimated dX.
         anti_windup_gain_dZ: Anti-windup gain for the estimated dZ.
+        time_constant_dX: Time constant of the subreflector drive dX (in s).
+        time_constant_dZ: Time constant of the subreflector drive dZ (in s).
         range_dX: Absolute range for dX (in m).
         range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
+        controller: Type of controller to use. Options are "AWPI", "P-AWPI", "M-PAWPI", and "D-PAWPI".
 
     Returns:
         EPL-to-subref control converter.
 
     """
+    # create the initial controller state
+    last = ControllerState(
+        epl=None,
+        time=None,
+        epl_cal=None,
+        cal_time=None, 
+        q=None,
+        r=None,
+        xi=None,
+        u=np.zeros(2),
+        p=np.zeros(2),
+        d=np.zeros(2),
+        v=np.zeros(2),
+    )
+
+    G, G_elevation = get_homologous_epl(feed_model)
+
     return Converter(
-        G=get_homologous_epl(feed_model),
+        G=G,
+        G_elevation=G_elevation,
         M=get_measurement_matrix(feed_model),
+        P=get_projection_matrix(feed_model, controller),
         K_I=get_integral_gain(integral_gain_dX, integral_gain_dZ),
         K_P=get_proportional_gain(proportional_gain_dX, proportional_gain_dZ),
         K_a=get_anti_windup_gain(anti_windup_gain_dX, anti_windup_gain_dZ),
+        T_s=get_time_constant(time_constant_dX, time_constant_dZ),
         control_period=control_period,
         epl_interval_tolerance=epl_interval_tolerance,
         range_dX=range_dX,
         range_dZ=range_dZ,
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
+        controller=controller,
+        last=last,
     )
+
+
+def get_anti_windup_gain(dX: float, dZ: float, /) -> np.ndarray:
+    """Get the anti-windup gain (K_a; drive) from given values."""
+    return np.array([dX, dZ])
 
 
 def get_epl_offsets(epl_offsets: PathLike[str] | str, /) -> xr.DataArray:
@@ -342,8 +407,8 @@ def get_homologous_epl(
     /,
     *,
     elevation_step: float = 0.01,
-) -> xr.DataArray:
-    """Get the homologous EPL (G; feed x elevation; in m) from given feed model.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Get the homologous EPL (G; feed x elevation; in m) and its elevations (in deg).
 
     Args:
         feed_model: Path to the feed model CSV file.
@@ -351,55 +416,26 @@ def get_homologous_epl(
 
     Returns:
         Homologous EPL (G; feed x elevation; in m).
+        Elevations of the homologous EPL (elevation; in deg).
 
     """
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
+        FEED_ORDER
+    ]
+    a = df["homologous_EPL_A"].to_numpy()[:, np.newaxis]
+    b = df["homologous_EPL_B"].to_numpy()[:, np.newaxis]
+    c = df["homologous_EPL_C"].to_numpy()[:, np.newaxis]
+    elevation = np.arange(0, 90.0 + elevation_step, elevation_step)
 
-    a = xr.DataArray(
-        df["homologous_EPL_A"],
-        dims="feed",
-        coords={"feed": df.index},
-        attrs={"units": "m"},
-    )
-    b = xr.DataArray(
-        df["homologous_EPL_B"],
-        dims="feed",
-        coords={"feed": df.index},
-        attrs={"units": "deg"},
-    )
-    c = xr.DataArray(
-        df["homologous_EPL_C"],
-        dims="feed",
-        coords={"feed": df.index},
-        attrs={"units": "m"},
-    )
-    elevation = xr.DataArray(
-        data := np.arange(0, 90.0 + elevation_step, elevation_step),
-        dims="elevation",
-        coords={"elevation": data},
-        attrs={"units": "deg"},
-    )
-
-    with xr.set_options(keep_attrs=True):
-        return (a * np.sin(np.deg2rad(elevation - b)) + c).rename("G")
+    return a * np.sin(np.deg2rad(elevation - b)) + c, elevation
 
 
-def get_integral_gain(dX: float, dZ: float, /) -> xr.DataArray:
+def get_integral_gain(dX: float, dZ: float, /) -> np.ndarray:
     """Get the integral gain (K_I; drive) from given values."""
-    return xr.DataArray(
-        data=[dX, dZ],
-        dims="drive",
-        coords={"drive": ["X", "Z"]},
-        name="K_I",
-    )
+    return np.array([dX, dZ])
 
 
-def get_inv(X: xr.DataArray, /) -> xr.DataArray:
-    """Get the inverse of given two-dimensional DataArray."""
-    return X.copy(data=np.linalg.inv(X.data.T)).T
-
-
-def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> xr.DataArray:
+def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> np.ndarray:
     """Get the measurement matrix (M; feed x drive) from given feed model.
 
     Args:
@@ -409,54 +445,65 @@ def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> xr.DataArray:
         Measurement matrix (M; feed x drive).
 
     """
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
+        FEED_ORDER
+    ]
 
-    return xr.DataArray(
-        [df["EPL_over_dX"], df["EPL_over_dZ"]],
-        dims=["drive", "feed"],
-        coords={
-            "drive": ["X", "Z"],
-            "feed": df.index,
-        },
-        name="M",
-    ).T
+    return np.array([df["EPL_over_dX"], df["EPL_over_dZ"]]).T
 
 
-def get_proportional_gain(dX: float, dZ: float, /) -> xr.DataArray:
+def get_projection_matrix(
+    feed_model: PathLike[str] | str,
+    controller: CONTROLLER,
+    /,
+) -> np.ndarray:
+    """Get the projection matrix (P; feed_proj x feed)."""
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
+        FEED_ORDER
+    ]
+    n_feed = len(df.index)
+
+    if controller == "AWPI":
+        return np.eye(n_feed)
+
+    return np.eye(n_feed) - 1 / n_feed * np.ones((n_feed, n_feed))
+
+
+def get_proportional_gain(dX: float, dZ: float, /) -> np.ndarray:
     """Get the proportional gain (K_P; drive) from given values."""
-    return xr.DataArray(
-        data=[dX, dZ],
-        dims="drive",
-        coords={"drive": ["X", "Z"]},
-        name="K_P",
-    )
+    return np.array([dX, dZ])
 
 
-def get_anti_windup_gain(dX: float, dZ: float, /) -> xr.DataArray:
-    """Get the anti-windup gain (K_a; drive) from given values."""
-    return xr.DataArray(
-        data=[dX, dZ],
-        dims="drive",
-        coords={"drive": ["X", "Z"]},
-        name="K_a",
-    )
+def get_time_constant(dX: float, dZ: float, /) -> np.ndarray:
+    """Get the time constant matrix (T_s; drive) from given values."""
+    return np.array([dX, dZ])
+
+
+def interp_homologous_epl(
+    G: np.ndarray,
+    G_elevation: np.ndarray,
+    elevation: float,
+    /,
+) -> np.ndarray:
+    """Linearly interpolate the homologous EPL (feed; in m) at given elevation."""
+    return np.array([np.interp(elevation, G_elevation, G_feed) for G_feed in G])
 
 
 def saturate_subref_control(
-    u_tmp: xr.DataArray, range_dX: tuple[float, float], range_dZ: tuple[float, float]
-) -> xr.DataArray:
+    u_tmp: np.ndarray, range_dX: tuple[float, float], range_dZ: tuple[float, float]
+) -> np.ndarray:
     """Saturation function to limit the subreflector control within the range."""
     u = u_tmp.copy()
-    if float(u.sel(drive="X")) < range_dX[0]:
-        u.loc[dict(drive="X")] = range_dX[0]
+    if u[0] < range_dX[0]:
+        u[0] = range_dX[0]
 
-    if float(u.sel(drive="X")) > range_dX[1]:
-        u.loc[dict(drive="X")] = range_dX[1]
+    if u[0] > range_dX[1]:
+        u[0] = range_dX[1]
 
-    if float(u.sel(drive="Z")) < range_dZ[0]:
-        u.loc[dict(drive="Z")] = range_dZ[0]
+    if u[1] < range_dZ[0]:
+        u[1] = range_dZ[0]
 
-    if float(u.sel(drive="Z")) > range_dZ[1]:
-        u.loc[dict(drive="Z")] = range_dZ[1]
+    if u[1] > range_dZ[1]:
+        u[1] = range_dZ[1]
 
     return u

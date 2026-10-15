@@ -55,14 +55,14 @@ class ControllerState:
 
     """
 
-    epl: np.ndarray | None
-    time: np.datetime64 | None
-    epl_cal: np.ndarray | None
-    cal_time: np.datetime64 | None
-    w: np.ndarray | None
-    q: np.ndarray | None
-    r: np.ndarray | None
-    xi: np.ndarray | None
+    epl: np.ndarray
+    time: np.datetime64
+    epl_cal: np.ndarray
+    cal_time: np.datetime64
+    w: np.ndarray
+    q: np.ndarray
+    r: np.ndarray
+    xi: np.ndarray
     u: np.ndarray
     p: np.ndarray
     d: np.ndarray
@@ -82,7 +82,6 @@ class Converter:
         K_P: Proportional gain (K_P; drive).
         K_a: Anti-windup gain (K_a; drive).
         T_s: Time constant (T_s; drive; in s).
-        last: Last estimated subreflector parameters.
         control_period: Control period (float in s or string with units).
         epl_interval_tolerance: Acceptable fraction of EPL time interval
             relative to the control period (0.1 means +/- 10% allowance).
@@ -91,6 +90,7 @@ class Converter:
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
         controller: Type of controller to use. Options are "AWPI", "P-AWPI", "M-PAWPI", and "D-PAWPI".
+        last: Last estimated subreflector parameters.
 
     """
 
@@ -102,7 +102,6 @@ class Converter:
     K_P: np.ndarray
     K_a: np.ndarray
     T_s: np.ndarray
-    last: ControllerState
     control_period: np.timedelta64 | str | float = "0.5 s"
     epl_interval_tolerance: float = 0.1
     range_dX: tuple[float, float] = (-0.038, 0.038)  # m
@@ -110,6 +109,7 @@ class Converter:
     range_ddX: tuple[float, float] = (0.00005, 0.000375)  # m
     range_ddZ: tuple[float, float] = (0.00005, 0.000300)  # m
     controller: CONTROLLER = "AWPI"
+    last: ControllerState | None = None
 
     def __post_init__(self):
         if self.controller not in get_args(CONTROLLER):
@@ -184,11 +184,70 @@ class Converter:
             )
 
         else:
-            w = np.zeros(q.shape)
+            w = np.full(q.shape, np.nan)
 
         r = self.P @ q
 
         xi = self.inv_PMTPM_PMT @ r
+
+        if self.last is None:
+            u_tmp = -self.K_P * xi
+
+            if self.controller == "D-PAWPI":
+                p = np.array([drive_amount_dX, drive_amount_dZ])
+                d = xi - p
+            elif self.controller == "M-PAWPI":
+                d = xi
+
+            else:
+                d = np.zeros(u_tmp.shape)
+                p = np.full(u_tmp.shape, np.nan)
+
+            u = saturate_subref_control(
+                saturate_subref_control(u_tmp, self.range_dX, self.range_dZ) - d,
+                self.range_dX,
+                self.range_dZ,
+            )
+
+            if (self.K_I == 0).all():
+                v = np.zeros(u_tmp.shape)
+            else:
+                v = tc * (
+                    xi
+                    + self.K_a
+                    * (
+                        u_tmp
+                        - saturate_subref_control(u_tmp, self.range_dX, self.range_dZ)
+                    )
+                )
+
+            if self.controller == "M-PAWPI":
+                p = tc / self.T_s * u
+
+            current = ControllerState(
+                epl=epl.sel(feed=FEED_ORDER).to_numpy(),
+                time=epl.time.data,
+                epl_cal=epl_cal.sel(feed=FEED_ORDER).to_numpy(),
+                cal_time=epl_cal.time.data,
+                w=w,
+                q=q,
+                r=r,
+                xi=xi,
+                u=u,
+                p=p,
+                d=d,
+                v=v,
+            )
+
+            if abs(dX := current.u[0]) > ABSMAX_DX:
+                LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
+                return self.on_failure(current)
+
+            if abs(dZ := current.u[1]) > ABSMAX_DZ:
+                LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
+                return self.on_failure(current)
+
+            return self.on_success(current)
 
         u_tmp = -self.K_I * self.last.v - self.K_P * xi
 
@@ -233,17 +292,6 @@ class Converter:
             d=d,
             v=v,
         )
-
-        if self.last.time is None:
-            if abs(dX := current.u[0]) > ABSMAX_DX:
-                LOGGER.warning(f"{dX=} is out of range (|dX| <= {ABSMAX_DX}).")
-                return self.on_failure(current)
-
-            if abs(dZ := current.u[1]) > ABSMAX_DZ:
-                LOGGER.warning(f"{dZ=} is out of range (|dZ| <= {ABSMAX_DZ}).")
-                return self.on_failure(current)
-
-            return self.on_success(current)
 
         dt = (current.time - self.last.time) / SECOND
 
@@ -298,11 +346,14 @@ class Converter:
 
     def on_failure(self, current: ControllerState, /) -> ControllerState:
         """Replace the last subreflector control's time with current one."""
-        if self.last.time is None:
-            v_zero = np.zeros_like(current.v)
-            p_zero = np.zeros_like(current.p)
-            u_zero = np.zeros_like(current.u)
-            self.last = replace(current, v=v_zero, p=p_zero, u=u_zero)
+        if self.last is None:
+            v_init = np.zeros_like(current.v)
+            u_init = np.zeros_like(current.u)
+            if self.controller == "M-PAWPI":
+                p_init = np.zeros_like(current.p)
+            else:
+                p_init = current.p
+            self.last = replace(current, v=v_init, p=p_init, u=u_init)
         else:
             self.last = replace(self.last, time=current.time)
 
@@ -353,21 +404,6 @@ def get_converter(
         EPL-to-subref control converter.
 
     """
-    # create the initial controller state
-    last = ControllerState(
-        epl=None,
-        time=None,
-        epl_cal=None,
-        cal_time=None,
-        w=None,
-        q=None,
-        r=None,
-        xi=None,
-        u=np.zeros(2),
-        p=np.zeros(2),
-        d=np.zeros(2),
-        v=np.zeros(2),
-    )
 
     G, G_elevation = get_homologous_epl(feed_model)
 
@@ -387,7 +423,6 @@ def get_converter(
         range_ddX=range_ddX,
         range_ddZ=range_ddZ,
         controller=controller,
-        last=last,
     )
 
 

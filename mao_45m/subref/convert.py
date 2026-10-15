@@ -3,6 +3,7 @@ __all__ = [
     "get_anti_windup_gain",
     "get_converter",
     "get_epl_offsets",
+    "get_feed_order",
     "get_homologous_epl",
     "get_integral_gain",
     "get_measurement_matrix",
@@ -31,7 +32,6 @@ from ..utils import to_timedelta
 # constants
 LOGGER = getLogger(__name__)
 SECOND = np.timedelta64(1, "s")
-FEED_ORDER = ["B", "C", "L", "R", "T"]  # alphabetical order
 CONTROLLER = Literal["AWPI", "P-AWPI", "M-PAWPI", "D-PAWPI"]
 
 
@@ -40,18 +40,20 @@ class ControllerState:
     """State of the subreflector controller.
 
     Args:
-        epl: EPL (feed; in m).
+        epl: EPL (feed; in m), ordered as B (Bottom), C (Center), L (Left),
+            R (Right), T (Top).
         time: Time of the EPL.
-        epl_cal: EPL at calibration (feed; in m).
+        epl_cal: EPL at calibration (feed; in m), ordered as B, C, L, R, T.
         cal_time: Time of the EPL at calibration.
-        w: Artificial disturbance (feed; in m).
-        q: Estimated residual (q; feed; in m).
-        r: Projected estimated residual (r; feed; in m).
-        xi: Estimated actuation coefficient (xi; drive; in m).
-        u: Drive command (u; drive; in m).
-        p: Drive amount, measured for D-PAWPI or estimated for M-PAWPI (p; drive; in m).
-        d: Estimated suppressible disturbance source (d; drive; in m).
-        v: Integrator variable (v; drive; in m s).
+        w: Artificial disturbance (feed; in m), ordered as B, C, L, R, T.
+        q: Estimated residual (q; feed; in m), ordered as B, C, L, R, T.
+        r: Projected estimated residual (r; feed; in m), ordered as B, C, L, R, T.
+        xi: Estimated actuation coefficient (xi; drive; in m), ordered as X, Z.
+        u: Drive command (u; drive; in m), ordered as X, Z.
+        p: Drive amount, measured for D-PAWPI or estimated for M-PAWPI
+            (p; drive; in m), ordered as X, Z.
+        d: Estimated suppressible disturbance source (d; drive; in m), ordered as X, Z.
+        v: Integrator variable (v; drive; in m s), ordered as X, Z.
 
     """
 
@@ -82,6 +84,7 @@ class Converter:
         K_P: Proportional gain (K_P; drive).
         K_a: Anti-windup gain (K_a; drive).
         T_s: Time constant (T_s; drive; in s).
+        feed_order: Feed order sorted alphabetically (feed).
         control_period: Control period (float in s or string with units).
         epl_interval_tolerance: Acceptable fraction of EPL time interval
             relative to the control period (0.1 means +/- 10% allowance).
@@ -89,7 +92,8 @@ class Converter:
         range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        controller: Type of controller to use. Options are "AWPI", "P-AWPI", "M-PAWPI", and "D-PAWPI".
+        controller: Type of controller to use. Options are "AWPI", "P-AWPI",
+            "M-PAWPI", and "D-PAWPI".
         last: Last estimated subreflector parameters.
 
     """
@@ -102,6 +106,7 @@ class Converter:
     K_P: np.ndarray
     K_a: np.ndarray
     T_s: np.ndarray
+    feed_order: list[str]
     control_period: np.timedelta64 | str | float = "0.5 s"
     epl_interval_tolerance: float = 0.1
     range_dX: tuple[float, float] = (-0.038, 0.038)  # m
@@ -149,38 +154,35 @@ class Converter:
 
         tc = float(to_timedelta(self.control_period) / SECOND)
 
+        epl_np = epl.sel(feed=self.feed_order).to_numpy()
+        epl_cal_np = epl_cal.sel(feed=self.feed_order).to_numpy()
+
         q = (
-            epl.sel(feed=FEED_ORDER).to_numpy()
-            - epl_cal.sel(feed=FEED_ORDER).to_numpy()
+            epl_np
+            - epl_cal_np
             - interp_homologous_epl(self.G, self.G_elevation, float(epl.elevation))
             + interp_homologous_epl(self.G, self.G_elevation, float(epl_cal.elevation))
         )
 
-        LOGGER.info(
+        LOGGER.debug(
             "Raw".ljust(10)
             + ", ".join(
-                f"EPL({feed})={1e3 * epl.sel(feed=feed):+.3f}mm"
-                for feed in epl.feed.data
+                f"EPL[{i}]={1e3 * epl_np[i]:+.3f}mm"
+                for i in range(len(self.feed_order))
             )
         )
-        LOGGER.info(
+        LOGGER.debug(
             "Corrected".ljust(10)
-            + ", ".join(
-                f"EPL({feed})={1e3 * q[i]:+.3f}mm"
-                for feed, i in zip(FEED_ORDER, range(len(q)))
-            )
+            + ", ".join(f"EPL[{i}]={1e3 * q[i]:+.3f}mm" for i in range(len(q)))
         )
 
         if epl_offset is not None:
-            w = epl_offset.sel(feed=FEED_ORDER).drop_vars("time").to_numpy()
+            w = epl_offset.sel(feed=self.feed_order).drop_vars("time").to_numpy()
             q = q + w
 
-            LOGGER.info(
+            LOGGER.debug(
                 "Offset".ljust(10)
-                + ", ".join(
-                    f"EPL({feed})={1e3 * epl_offset.sel(feed=feed):+.3f}mm"
-                    for feed in epl_offset.feed.data
-                )
+                + ", ".join(f"EPL[{i}]={1e3 * w[i]:+.3f}mm" for i in range(len(w)))
             )
 
         else:
@@ -225,9 +227,9 @@ class Converter:
                 p = tc / self.T_s * u
 
             current = ControllerState(
-                epl=epl.sel(feed=FEED_ORDER).to_numpy(),
+                epl=epl_np,
                 time=epl.time.data,
-                epl_cal=epl_cal.sel(feed=FEED_ORDER).to_numpy(),
+                epl_cal=epl_cal_np,
                 cal_time=epl_cal.time.data,
                 w=w,
                 q=q,
@@ -279,9 +281,9 @@ class Converter:
             p = self.last.p + tc / self.T_s * (-self.last.p + u)
 
         current = ControllerState(
-            epl=epl.sel(feed=FEED_ORDER).to_numpy(),
+            epl=epl_np,
             time=epl.time.data,
-            epl_cal=epl_cal.sel(feed=FEED_ORDER).to_numpy(),
+            epl_cal=epl_cal_np,
             cal_time=epl_cal.time.data,
             w=w,
             q=q,
@@ -331,12 +333,12 @@ class Converter:
 
     def on_success(self, current: ControllerState, /) -> ControllerState:
         """Replace the last subreflector control with current one."""
-        LOGGER.info(
+        LOGGER.debug(
             ", ".join(
                 f"u[{i}]={1e3 * current.u[i]:+.3f}mm" for i in range(len(current.u))
             )
         )
-        LOGGER.info(
+        LOGGER.debug(
             ", ".join(
                 f"xi[{i}]={1e3 * current.xi[i]:+.3f}mm" for i in range(len(current.xi))
             )
@@ -398,7 +400,8 @@ def get_converter(
         range_dZ: Absolute range for dZ (in m).
         range_ddX: Absolute range for ddX (in m).
         range_ddZ: Absolute range for ddZ (in m).
-        controller: Type of controller to use. Options are "AWPI", "P-AWPI", "M-PAWPI", and "D-PAWPI".
+        controller: Type of controller to use. Options are "AWPI", "P-AWPI",
+            "M-PAWPI", and "D-PAWPI".
 
     Returns:
         EPL-to-subref control converter.
@@ -416,6 +419,7 @@ def get_converter(
         K_P=get_proportional_gain(proportional_gain_dX, proportional_gain_dZ),
         K_a=get_anti_windup_gain(anti_windup_gain_dX, anti_windup_gain_dZ),
         T_s=get_time_constant(time_constant_dX, time_constant_dZ),
+        feed_order=get_feed_order(feed_model),
         control_period=control_period,
         epl_interval_tolerance=epl_interval_tolerance,
         range_dX=range_dX,
@@ -445,6 +449,21 @@ def get_epl_offsets(epl_offsets: PathLike[str] | str, /) -> xr.DataArray:
     )
 
 
+def get_feed_order(feed_model: PathLike[str] | str, /) -> list[str]:
+    """Get the feed names in alphabetical order from given feed model.
+
+    Args:
+        feed_model: Path to the feed model CSV file.
+
+    Returns:
+        Feed names sorted alphabetically (feed).
+
+    """
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+
+    return sorted(df.index.str.upper())
+
+
 def get_homologous_epl(
     feed_model: PathLike[str] | str,
     /,
@@ -462,9 +481,9 @@ def get_homologous_epl(
         Elevations of the homologous EPL (elevation; in deg).
 
     """
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
-        FEED_ORDER
-    ]
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+    df.index = df.index.str.upper()
+    df = df.loc[sorted(df.index)]
     a = df["homologous_EPL_A"].to_numpy()[:, np.newaxis]
     b = df["homologous_EPL_B"].to_numpy()[:, np.newaxis]
     c = df["homologous_EPL_C"].to_numpy()[:, np.newaxis]
@@ -488,9 +507,9 @@ def get_measurement_matrix(feed_model: PathLike[str] | str, /) -> np.ndarray:
         Measurement matrix (M; feed x drive).
 
     """
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
-        FEED_ORDER
-    ]
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+    df.index = df.index.str.upper()
+    df = df.loc[sorted(df.index)]
 
     return np.array([df["EPL_over_dX"], df["EPL_over_dZ"]]).T
 
@@ -501,9 +520,9 @@ def get_projection_matrix(
     /,
 ) -> np.ndarray:
     """Get the projection matrix (P; feed_proj x feed)."""
-    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True).loc[
-        FEED_ORDER
-    ]
+    df = pd.read_csv(feed_model, comment="#", index_col=0, skipinitialspace=True)
+    df.index = df.index.str.upper()
+    df = df.loc[sorted(df.index)]
     n_feed = len(df.index)
 
     if controller == "AWPI":
